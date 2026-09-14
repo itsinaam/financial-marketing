@@ -50,22 +50,24 @@ app = FastAPI(
 if os.path.exists(UPLOAD_DIR):
     app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# Set CORS middleware allowing Vite (5173), Next.js (3000), and all local ports
+# Set CORS middleware allowing all frontend domains (Vercel, Vite, Next.js, localhost)
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://financial-markett.vercel.app",
     "https://financial-marketing.vercel.app",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+    allow_origin_regex=r"^https?://.*$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Register API v1 router
