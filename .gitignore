@@ -1,0 +1,17 @@
+# Python cache & bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables & virtual environment
+.env
+.venv/
+venv/
+ENV/
+
+# Temporary / OS files
+notes.txt
+.DS_Store
+Thumbs.db
+.vercel/
