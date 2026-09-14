@@ -6,6 +6,12 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
+import os
+from fastapi.staticfiles import StaticFiles
+
+# Ensure uploads directory exists
+os.makedirs("uploads", exist_ok=True)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,7 +42,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Mount public uploads for image hosting (used by Instagram API)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 # Set CORS middleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
