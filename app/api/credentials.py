@@ -416,6 +416,7 @@ def create_social_post(
             file_bytes = image.file.read()
             if len(file_bytes) > 0:
                 ext = os.path.splitext(image.filename)[1] or ".jpg"
+                unique_filename = f"{uuid.uuid4().hex}{ext}"
                 upload_dir = "/tmp/uploads" if os.environ.get("VERCEL") else "uploads"
                 try:
                     os.makedirs(upload_dir, exist_ok=True)
