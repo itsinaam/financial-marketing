@@ -21,7 +21,15 @@ from app.schemas.credentials import (
     PostResponse,
     CredentialsResponse,
     PlatformStatusResponse,
-    
+)
+from app.schemas.library import (
+    MediaTypeLiteral,
+    LibraryBase,
+    LibraryCreate,
+    LibraryUpdate,
+    LibraryItemResponse,
+    LibraryListResponse,
+    LibraryDeleteResponse,
 )
 
 __all__ = [
@@ -43,6 +51,13 @@ __all__ = [
     "PostResponse",
     "CredentialsResponse",
     "PlatformStatusResponse",
+    "MediaTypeLiteral",
+    "LibraryBase",
+    "LibraryCreate",
+    "LibraryUpdate",
+    "LibraryItemResponse",
+    "LibraryListResponse",
+    "LibraryDeleteResponse",
 ]
 
 

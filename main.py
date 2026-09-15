@@ -6,15 +6,6 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
-import os
-from fastapi.staticfiles import StaticFiles
-
-# Ensure uploads directory exists (use /tmp on Vercel serverless)
-UPLOAD_DIR = "/tmp/uploads" if os.environ.get("VERCEL") else "uploads"
-try:
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-except Exception:
-    pass
 
 
 @asynccontextmanager
@@ -45,10 +36,6 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     lifespan=lifespan,
 )
-
-# Mount public uploads for image hosting (used by Instagram API)
-if os.path.exists(UPLOAD_DIR):
-    app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # Set CORS middleware allowing all frontend domains (Vercel, Vite, Next.js, localhost)
 origins = [

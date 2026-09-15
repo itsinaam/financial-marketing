@@ -1,5 +1,3 @@
-import os
-import uuid
 from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, File, UploadFile, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -19,6 +17,7 @@ from app.schemas.credentials import (
 from app.schemas.token import TokenPayload
 from app.services.linkedin_service import LinkedInService, DEFAULT_MEMBER_SCOPES
 from app.services.instagram_service import InstagramService
+from app.services.storage_service import upload_library_asset
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
@@ -90,7 +89,6 @@ def resolve_company(db: Session, auth: Optional[HTTPAuthorizationCredentials], c
 
 
 @router.get("", response_model=List[PlatformStatusResponse], include_in_schema=False)
-@router.get("/", response_model=List[PlatformStatusResponse], summary="List connected status of social media platforms for current company")
 def get_linked_platforms(
     company_id: Optional[int] = Query(
         None,
@@ -147,9 +145,6 @@ def get_linked_platforms(
 
 
 @router.post("", response_model=CredentialsResponse, summary="Save platform credentials (Client ID, Secret, Platform) into Database")
-@router.post("/", response_model=CredentialsResponse, include_in_schema=False)
-@router.post("/linkedin", response_model=CredentialsResponse, summary="Save LinkedIn credentials into Database")
-@router.post("/instagram", response_model=CredentialsResponse, summary="Save Instagram credentials into Database")
 def save_credentials(
     payload: SaveCredentialsRequest,
     request: Request,
@@ -415,18 +410,11 @@ def create_social_post(
         elif image and image.filename:
             file_bytes = image.file.read()
             if len(file_bytes) > 0:
-                ext = os.path.splitext(image.filename)[1] or ".jpg"
-                unique_filename = f"{uuid.uuid4().hex}{ext}"
-                upload_dir = "/tmp/uploads" if os.environ.get("VERCEL") else "uploads"
-                try:
-                    os.makedirs(upload_dir, exist_ok=True)
-                except Exception:
-                    pass
-                file_path = os.path.join(upload_dir, unique_filename)
-                with open(file_path, "wb") as f:
-                    f.write(file_bytes)
-                base_url = get_request_base_url(request)
-                final_image_url = f"{base_url}/uploads/{unique_filename}"
+                final_image_url = upload_library_asset(
+                    file_content=file_bytes,
+                    filename=image.filename,
+                    content_type=image.content_type or "image/jpeg",
+                )
 
         if not final_image_url:
             raise HTTPException(
