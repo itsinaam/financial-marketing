@@ -1,6 +1,6 @@
 from typing import List
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, model_validator
 from app.models.companies import Role
 from app.schemas.payment import PaymentResponse
 
@@ -42,6 +42,18 @@ class UserUpdate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class SignupRequest(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str
+    confirm_password: str
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> "SignupRequest":
+        if self.password != self.confirm_password:
+            raise ValueError("Password and confirm password do not match")
+        return self
 
 class UserResponse(UserBase):
     id: int
