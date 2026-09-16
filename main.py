@@ -1,23 +1,47 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
+from app.models import companies, credentials, library, payment, post  # noqa: F401 - register models on Base
+from app.services.scheduler_service import scheduled_post_checker_loop
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Application Lifespan Event Handler.
-    Creates database tables and seeds default Super Admin on startup.
+    Creates database tables, seeds default Super Admin, and starts the
+    scheduled-post auto-publish background loop.
     """
+    scheduler_task = asyncio.create_task(scheduled_post_checker_loop())
     try:
         # 1. Ensure DB tables exist
         Base.metadata.create_all(bind=engine)
-        
+
+        # 1b. Add columns introduced after these tables were first created
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS refresh_token TEXT"
+            ))
+            connection.execute(text(
+                "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ"
+            ))
+            connection.execute(text(
+                "ALTER TABLE generated_posts ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE generated_posts ALTER COLUMN created_at SET DEFAULT now()"
+            ))
+            connection.execute(text(
+                "ALTER TABLE generated_posts ALTER COLUMN updated_at SET DEFAULT now()"
+            ))
+
         # 2. Seed default Super Admin user
         db = SessionLocal()
         try:
@@ -26,8 +50,10 @@ async def lifespan(app: FastAPI):
             db.close()
     except Exception as exc:
         print(f"Startup DB init notice: {exc}")
-        
+
     yield
+
+    scheduler_task.cancel()
 
 
 

@@ -12,6 +12,8 @@ class Credentials(Base):
     client_id = Column(String(255), nullable=False, index=True)
     client_secret = Column(String(255), nullable=False)
     access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
     organization_id = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

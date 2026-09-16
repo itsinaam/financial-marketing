@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, File, UploadFile, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -17,6 +18,8 @@ from app.schemas.credentials import (
 from app.schemas.token import TokenPayload
 from app.services.linkedin_service import LinkedInService, DEFAULT_MEMBER_SCOPES
 from app.services.instagram_service import InstagramService
+from app.services.facebook_service import FacebookService
+from app.services.twitter_service import TwitterService
 from app.services.storage_service import upload_library_asset
 
 router = APIRouter()
@@ -162,8 +165,14 @@ def save_credentials(
         platform_name = "instagram"
     elif path.endswith("/linkedin"):
         platform_name = "linkedin"
+    elif path.endswith("/facebook"):
+        platform_name = "facebook"
+    elif path.endswith("/x") or path.endswith("/twitter"):
+        platform_name = "x"
     else:
         platform_name = payload.platform.strip().lower()
+        if platform_name == "twitter":
+            platform_name = "x"
 
     base_url = get_request_base_url(request)
     access_token = None
@@ -200,6 +209,30 @@ def save_credentials(
         response_msg = (
             f"Instagram credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
             f"Valid OAuth Redirect URIs in your Meta Developer App, then open authorization_url in browser to connect your Instagram account."
+        )
+
+    elif platform_name == "facebook":
+        effective_redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/facebook/callback"
+        auth_url = FacebookService.get_authorization_url(
+            client_id=payload.client_id,
+            redirect_uri=effective_redirect_uri,
+            state=str(company.id),
+        )
+        response_msg = (
+            f"Facebook credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
+            f"Valid OAuth Redirect URIs in your Meta Developer App, then open authorization_url in browser to connect your Facebook Page."
+        )
+
+    elif platform_name == "x":
+        effective_redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/x/callback"
+        auth_url = TwitterService.get_authorization_url(
+            client_id=payload.client_id,
+            redirect_uri=effective_redirect_uri,
+            company_id=str(company.id),
+        )
+        response_msg = (
+            f"X (Twitter) credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
+            f"the callback URI in your X Developer App (OAuth 2.0), then open authorization_url in browser to connect your account."
         )
 
     # Check if record already exists for this company and platform
@@ -264,6 +297,8 @@ def create_social_post(
     """
     company = resolve_company(db, auth, company_id)
     platform_name = platform.strip().lower()
+    if platform_name == "twitter":
+        platform_name = "x"
 
     credential = (
         db.query(Credentials)
@@ -441,6 +476,110 @@ def create_social_post(
             target="Instagram",
             image_attached=True,
             message=f"Post published successfully to Instagram! Post ID: {result.get('post_id')}",
+        )
+
+    # ------------------ FACEBOOK POSTING ------------------
+    elif platform_name == "facebook":
+        page_id = credential.organization_id
+
+        if not credential.access_token or not page_id:
+            base_url = get_request_base_url(request)
+            redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/facebook/callback"
+            auth_url = FacebookService.get_authorization_url(
+                client_id=credential.client_id,
+                redirect_uri=redirect_uri,
+                state=str(company.id),
+            )
+            return PostResponse(
+                success=False,
+                platform=platform_name,
+                message=(
+                    f"Facebook App ID and Secret are saved, but your Facebook Page is not connected yet. "
+                    f"Please ensure '{redirect_uri}' is added to Valid OAuth Redirect URIs in your Meta App, "
+                    f"then connect your account by opening authorization_url in browser."
+                ),
+                authorization_url=auth_url,
+            )
+
+        full_text = caption.strip()
+        if hashtags and hashtags.strip():
+            full_text = f"{full_text}\n\n{hashtags.strip()}"
+
+        final_image_url = None
+        if image_url and image_url.strip():
+            final_image_url = image_url.strip()
+        elif image and image.filename:
+            file_bytes = image.file.read()
+            if len(file_bytes) > 0:
+                final_image_url = upload_library_asset(
+                    file_content=file_bytes,
+                    filename=image.filename,
+                    content_type=image.content_type or "image/jpeg",
+                )
+
+        result = FacebookService.create_post(
+            page_access_token=credential.access_token,
+            page_id=page_id,
+            message=full_text,
+            image_url=final_image_url,
+        )
+
+        return PostResponse(
+            success=True,
+            platform=platform_name,
+            post_id=result.get("post_id"),
+            target="Facebook Page",
+            image_attached=bool(final_image_url),
+            message=f"Post published successfully to Facebook! Post ID: {result.get('post_id')}",
+        )
+
+    # ------------------ X (TWITTER) POSTING ------------------
+    elif platform_name == "x":
+        if not credential.access_token:
+            base_url = get_request_base_url(request)
+            redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/x/callback"
+            auth_url = TwitterService.get_authorization_url(
+                client_id=credential.client_id,
+                redirect_uri=redirect_uri,
+                company_id=str(company.id),
+            )
+            return PostResponse(
+                success=False,
+                platform=platform_name,
+                message=(
+                    f"Client ID and Secret are saved in DB! Post karne ke liye 1-time authorization zaroori hai. "
+                    f"Make sure '{redirect_uri}' is added to the callback URI in your X app, then open authorization_url in browser."
+                ),
+                authorization_url=auth_url,
+            )
+
+        if credential.token_expires_at and credential.token_expires_at <= datetime.now(timezone.utc):
+            refreshed = TwitterService.refresh_access_token(
+                client_id=credential.client_id,
+                client_secret=credential.client_secret,
+                refresh_token=credential.refresh_token,
+            )
+            credential.access_token = refreshed["access_token"]
+            credential.refresh_token = refreshed["refresh_token"]
+            credential.token_expires_at = refreshed["expires_at"]
+            db.commit()
+
+        full_text = caption.strip()
+        if hashtags and hashtags.strip():
+            full_text = f"{full_text}\n\n{hashtags.strip()}"
+
+        result = TwitterService.create_post(
+            access_token=credential.access_token,
+            text=full_text,
+        )
+
+        return PostResponse(
+            success=True,
+            platform=platform_name,
+            post_id=result.get("post_id"),
+            target="X (Twitter)",
+            image_attached=False,
+            message=f"Post published successfully to X! Post ID: {result.get('post_id')}",
         )
 
     raise HTTPException(
@@ -631,4 +770,176 @@ def instagram_callback(
         "code": clean_code,
         "state": state,
         "message": "Authorization code received successfully, but no matching Instagram credential found in database.",
+    }
+
+
+@router.get("/facebook/callback", summary="Facebook Callback endpoint that automatically exchanges code and saves the Page token in DB")
+def facebook_callback(
+    request: Request,
+    code: Optional[str] = Query(None, description="Authorization code from Facebook"),
+    error: Optional[str] = Query(None, description="Error code if user denied authorization"),
+    error_reason: Optional[str] = Query(None, description="Error reason"),
+    error_description: Optional[str] = Query(None, description="Error description"),
+    state: Optional[str] = Query(None, description="State containing company_id"),
+    db: Session = Depends(deps.get_db),
+) -> dict:
+    """
+    Facebook OAuth Callback:
+    - Receives authorization code from the Meta/Facebook OAuth dialog
+    - Exchanges the code for a User token, upgrades it to a Long-Lived token
+    - Resolves the first managed Facebook Page and its permanent Page Access Token
+    - Saves the Page token + Page ID to the database
+    """
+    if error:
+        return {
+            "status": "error",
+            "error": error,
+            "error_reason": error_reason,
+            "error_description": error_description,
+        }
+    if not code:
+        return {
+            "status": "error",
+            "error": "missing_code",
+            "message": "No authorization code was provided in callback. Please initiate OAuth from authorization_url.",
+        }
+
+    current_redirect_uri = get_current_callback_url(request)
+
+    target_company_id = None
+    if state:
+        try:
+            target_company_id = int(state)
+        except ValueError:
+            pass
+
+    credential = None
+    if target_company_id:
+        credential = (
+            db.query(Credentials)
+            .filter(
+                Credentials.company_id == target_company_id,
+                Credentials.platform == "facebook",
+            )
+            .first()
+        )
+
+    if credential:
+        try:
+            token_data = FacebookService.exchange_authorization_code(
+                client_id=credential.client_id,
+                client_secret=credential.client_secret,
+                code=code,
+                redirect_uri=current_redirect_uri,
+            )
+            credential.access_token = token_data.get("access_token")
+            credential.organization_id = token_data.get("page_id")
+            db.commit()
+            db.refresh(credential)
+
+            return {
+                "status": "success",
+                "message": "🎉 Facebook Page successfully connected! Page access token saved in database.",
+                "company_id": target_company_id,
+                "platform": "facebook",
+                "page_id": credential.organization_id,
+                "page_name": token_data.get("page_name"),
+                "next_step": "You can now publish posts using POST /api/credentials/post with platform='facebook'.",
+            }
+        except Exception as ex:
+            return {
+                "status": "partial_success",
+                "code": code,
+                "warning": f"Received authorization code, but automated token exchange failed: {str(ex)}",
+                "company_id": target_company_id,
+                "platform": "facebook",
+            }
+
+    return {
+        "status": "success",
+        "code": code,
+        "state": state,
+        "message": "Authorization code received successfully, but no matching Facebook credential found in database.",
+    }
+
+
+@router.get("/x/callback", summary="X (Twitter) Callback endpoint that automatically exchanges code and saves token in DB")
+def x_callback(
+    request: Request,
+    code: Optional[str] = Query(None, description="Authorization code from X"),
+    error: Optional[str] = Query(None, description="Error code if user denied authorization"),
+    state: Optional[str] = Query(None, description="State containing company_id and PKCE code_verifier"),
+    db: Session = Depends(deps.get_db),
+) -> dict:
+    """
+    X (Twitter) OAuth 2.0 (PKCE) Callback:
+    - Recovers company_id and code_verifier from the opaque state param
+    - Exchanges the authorization code for an access/refresh token pair
+    - Saves the tokens (and their expiry) to the database
+    """
+    if error:
+        return {"status": "error", "error": error}
+    if not code:
+        return {
+            "status": "error",
+            "error": "missing_code",
+            "message": "No authorization code was provided in callback. Please initiate OAuth from authorization_url.",
+        }
+
+    target_company_id, code_verifier = TwitterService.parse_state(state or "")
+    if not target_company_id or not code_verifier:
+        return {
+            "status": "error",
+            "error": "invalid_state",
+            "message": "Missing or invalid state param. Please initiate OAuth from authorization_url again.",
+        }
+
+    current_redirect_uri = get_current_callback_url(request)
+
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == int(target_company_id),
+            Credentials.platform == "x",
+        )
+        .first()
+    )
+
+    if credential:
+        try:
+            token_data = TwitterService.exchange_authorization_code(
+                client_id=credential.client_id,
+                client_secret=credential.client_secret,
+                code=code,
+                redirect_uri=current_redirect_uri,
+                code_verifier=code_verifier,
+            )
+            credential.access_token = token_data.get("access_token")
+            credential.refresh_token = token_data.get("refresh_token")
+            credential.token_expires_at = token_data.get("expires_at")
+            db.commit()
+            db.refresh(credential)
+
+            return {
+                "status": "success",
+                "message": "🎉 X (Twitter) account successfully connected! Access token saved in database.",
+                "company_id": int(target_company_id),
+                "platform": "x",
+                "username": token_data.get("username"),
+                "next_step": "You can now publish posts using POST /api/credentials/post with platform='x'.",
+            }
+        except Exception as ex:
+            return {
+                "status": "partial_success",
+                "code": code,
+                "warning": f"Received authorization code, but automated token exchange failed: {str(ex)}",
+                "company_id": int(target_company_id),
+                "platform": "x",
+            }
+
+    return {
+        "status": "success",
+        "code": code,
+        "state": state,
+        "message": "Authorization code received successfully, but no matching X credential found in database.",
     }
