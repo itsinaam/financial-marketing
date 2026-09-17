@@ -313,6 +313,32 @@ def save_credentials(
             f"the callback URI in your X Developer App (OAuth 2.0), then open authorization_url in browser to connect your account."
         )
 
+    elif platform_name == "wordpress":
+        if not payload.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="organization_id (the site's base URL, e.g. https://yoursite.com) is required for WordPress.",
+            )
+        access_token = payload.client_secret
+        response_msg = (
+            "WordPress site connected! client_id is your WP username and client_secret is an Application "
+            "Password (wp-admin > Users > Profile > Application Passwords). You can now publish blogs via "
+            "POST /api/blogs/{id}/publish with platform='wordpress'."
+        )
+
+    elif platform_name == "ghost":
+        if not payload.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="organization_id (the site's Admin API URL, e.g. https://yoursite.ghost.io) is required for Ghost.",
+            )
+        access_token = payload.client_secret
+        response_msg = (
+            "Ghost site connected! client_secret should be the Admin API Key ('id:secret' format from Settings > "
+            "Integrations > Custom Integration). You can now publish blogs via POST /api/blogs/{id}/publish with "
+            "platform='ghost'."
+        )
+
     # Check if record already exists for this company and platform
     credential = (
         db.query(Credentials)
@@ -328,6 +354,8 @@ def save_credentials(
         credential.client_secret = payload.client_secret
         if access_token:
             credential.access_token = access_token
+        if payload.organization_id:
+            credential.organization_id = payload.organization_id
     else:
         credential = Credentials(
             company_id=company.id,
@@ -335,6 +363,7 @@ def save_credentials(
             client_id=payload.client_id,
             client_secret=payload.client_secret,
             access_token=access_token,
+            organization_id=payload.organization_id,
         )
         db.add(credential)
 

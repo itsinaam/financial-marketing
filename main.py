@@ -8,7 +8,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
-from app.models import companies, credentials, library, payment, post  # noqa: F401 - register models on Base
+from app.models import companies, credentials, library, payment, post, blog  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
 

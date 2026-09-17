@@ -8,6 +8,10 @@ class SaveCredentialsRequest(BaseModel):
     client_secret: str = Field(..., description="Platform Client Secret")
     platform: str = Field(default="linkedin", description="Platform name (e.g. linkedin)")
     company_id: Optional[int] = Field(None, description="Optional Company ID if not authenticated via Bearer token")
+    organization_id: Optional[str] = Field(
+        None,
+        description="Only for API-key based platforms (wordpress, ghost): the site URL / Admin API URL.",
+    )
 
 
 class PostResponse(BaseModel):

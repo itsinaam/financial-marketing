@@ -8,7 +8,9 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.credentials import Credentials
 from app.models.post import GeneratedPost
+from app.models.blog import GeneratedBlog
 from app.services.post_generator_service import publish_post_to_platform
+from app.services.blog_generator_service import publish_blog_to_platform
 
 logger = logging.getLogger("SchedulerService")
 
@@ -111,8 +113,60 @@ def check_and_publish_due_posts(db: Session) -> list[dict]:
     return results
 
 
+def check_and_publish_due_blogs(db: Session) -> list[dict]:
+    """
+    Publish every approved, not-yet-posted GeneratedBlog whose scheduled date/time
+    has arrived. Blogs without a valid schedule are skipped (manual publish only).
+    """
+    results = []
+    now_utc = datetime.now(timezone.utc)
+
+    due_candidates = (
+        db.query(GeneratedBlog)
+        .filter(
+            GeneratedBlog.is_approved == True,  # noqa: E712
+            GeneratedBlog.is_posted == False,  # noqa: E712
+            GeneratedBlog.date.is_not(None),
+            GeneratedBlog.start_time.is_not(None),
+        )
+        .all()
+    )
+
+    for blog in due_candidates:
+        scheduled_at = parse_scheduled_datetime(blog.date, blog.start_time)
+        if not scheduled_at or scheduled_at > now_utc:
+            continue
+
+        # Mark as posted before the network call to avoid double-publishing if
+        # two scheduler ticks overlap.
+        blog.is_posted = True
+        db.commit()
+
+        credential = (
+            db.query(Credentials)
+            .filter(Credentials.company_id == blog.company_id, Credentials.platform == blog.platform)
+            .first()
+        )
+
+        try:
+            detail = publish_blog_to_platform(blog, credential)
+            blog.posted_at = now_utc
+            blog.post_error = None
+            db.commit()
+            logger.info("Scheduled blog '%s' published successfully to %s.", blog.id, blog.platform)
+            results.append({"blog_id": blog.id, "platform": blog.platform, "status": "success", "details": detail})
+        except Exception as err:
+            blog.is_posted = False
+            blog.post_error = str(err)
+            db.commit()
+            logger.error("Scheduled blog '%s' failed to publish: %s", blog.id, err)
+            results.append({"blog_id": blog.id, "platform": blog.platform, "status": "failed", "error": str(err)})
+
+    return results
+
+
 async def scheduled_post_checker_loop() -> None:
-    """Background task: periodically publish any due, approved posts."""
+    """Background task: periodically publish any due, approved posts and blogs."""
     logger.info("Scheduled post checker loop started (interval=%ss).", CHECK_INTERVAL_SECONDS)
     while True:
         try:
@@ -120,6 +174,7 @@ async def scheduled_post_checker_loop() -> None:
             db = SessionLocal()
             try:
                 check_and_publish_due_posts(db)
+                check_and_publish_due_blogs(db)
             finally:
                 db.close()
         except asyncio.CancelledError:
