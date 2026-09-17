@@ -23,9 +23,7 @@ DEFAULT_FB_SCOPES = (
 # Alternative Direct Instagram Login scopes
 DEFAULT_IG_SCOPES = (
     "instagram_business_basic,"
-    "instagram_business_content_publish,"
-    "instagram_business_manage_messages,"
-    "instagram_business_manage_comments"
+    "instagram_business_content_publish"
 )
 
 
@@ -36,11 +34,11 @@ class InstagramService:
         redirect_uri: str,
         state: str = "default_state",
         scope: Optional[str] = None,
-        use_instagram_login: bool = False,
+        use_instagram_login: bool = True,
     ) -> str:
         """
         Generate Instagram OAuth 2.0 Authorization URL.
-        Defaults to Facebook Dialog (standard for Meta Instagram Graph API Content Publishing).
+        Defaults to Instagram Login so users authenticate on Instagram directly.
         """
         if use_instagram_login:
             target_scope = scope or DEFAULT_IG_SCOPES
@@ -80,6 +78,7 @@ class InstagramService:
         """
         short_token = None
         user_id = None
+        exchange_errors = []
 
         clean_redirect_uri = redirect_uri.split("?")[0]
 
@@ -95,8 +94,10 @@ class InstagramService:
             if res.status_code == 200:
                 data = res.json()
                 short_token = data.get("access_token")
+            else:
+                exchange_errors.append(res.text[:500])
         except requests.RequestException:
-            pass
+            exchange_errors.append("Facebook token exchange request failed")
 
         # 1b. Fallback to direct Instagram endpoint
         if not short_token:
@@ -113,13 +114,19 @@ class InstagramService:
                     data = res.json()
                     short_token = data.get("access_token")
                     user_id = data.get("user_id")
+                else:
+                    exchange_errors.append(res.text[:500])
             except requests.RequestException:
-                pass
+                exchange_errors.append("Instagram token exchange request failed")
 
         if not short_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Meta returned an error during token exchange. Please check your App ID, Secret, and Redirect URI.",
+                detail=(
+                    "Meta returned an error during token exchange. Verify that the OAuth URL client_id, "
+                    "INSTAGRAM_CLIENT_ID, INSTAGRAM_CLIENT_SECRET, and redirect_uri belong to the same Meta app. "
+                    f"Provider response: {' | '.join(exchange_errors)}"
+                ),
             )
 
         # 2. Upgrade to Long-Lived Token (60 days)

@@ -40,5 +40,13 @@ class PlatformStatusResponse(BaseModel):
     is_connected: bool = Field(..., description="Whether the account is connected (true/false)")
 
 
+class OAuthConnectResponse(BaseModel):
+    company_id: int
+    platform: str
+    authorization_url: str
+    redirect_uri: str
+    message: str
+
+
 
 

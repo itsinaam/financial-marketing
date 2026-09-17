@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     APP_NAME: str = config("APP_NAME")
     DATABASE_URL: str = config("DATABASE_URL")
+    PUBLIC_BASE_URL: str = config("PUBLIC_BASE_URL", default="")
+
+    # Meta app credentials used by the one-click Instagram connection flow.
+    INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")
+    INSTAGRAM_CLIENT_SECRET: str = config("INSTAGRAM_CLIENT_SECRET", default="")
 
     SECRET_KEY: str = config("SECRET_KEY")
     ALGORITHM: str = config("ALGORITHM")

@@ -13,7 +13,8 @@ from app.schemas.credentials import (
     SaveCredentialsRequest,
     PostResponse,
     CredentialsResponse,
-    PlatformStatusResponse
+    PlatformStatusResponse,
+    OAuthConnectResponse,
 )
 from app.schemas.token import TokenPayload
 from app.services.linkedin_service import LinkedInService, DEFAULT_MEMBER_SCOPES
@@ -30,8 +31,11 @@ CORE_PLATFORMS = ["linkedin", "instagram", "facebook", "x"]
 
 def get_request_base_url(request: Request) -> str:
     """
-    Get public base URL respecting reverse proxy headers (e.g. Vercel HTTPS).
+    Get the public base URL used by OAuth callbacks.
     """
+    if settings.PUBLIC_BASE_URL:
+        return settings.PUBLIC_BASE_URL.rstrip("/")
+
     base = str(request.base_url).rstrip("/")
     proto = request.headers.get("x-forwarded-proto")
     if proto and base.startswith("http://"):
@@ -41,8 +45,14 @@ def get_request_base_url(request: Request) -> str:
 
 def get_current_callback_url(request: Request) -> str:
     """
-    Get current callback URL without query parameters, respecting reverse proxy headers.
+    Get the public callback URL without query parameters.
     """
+    if settings.PUBLIC_BASE_URL:
+        return (
+            f"{settings.PUBLIC_BASE_URL.rstrip('/')}{settings.API_V1_STR}"
+            "/credentials/instagram/callback"
+        )
+
     url = str(request.url).split("?")[0].rstrip("/")
     proto = request.headers.get("x-forwarded-proto")
     if proto and url.startswith("http://"):
@@ -145,6 +155,76 @@ def get_linked_platforms(
             )
 
     return results
+
+
+@router.get(
+    "/instagram/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the Instagram OAuth URL for a one-click account connection",
+)
+def connect_instagram(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """
+    Prepare Instagram OAuth without asking the user for an Instagram password.
+
+    The browser is redirected to Instagram/Meta, where the user logs in and
+    grants permissions. Instagram never sends that password to this API.
+    """
+    company = resolve_company(db, auth, company_id)
+    redirect_uri = (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/instagram/callback"
+    )
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform == "instagram",
+        )
+        .first()
+    )
+    client_id = credential.client_id if credential else settings.INSTAGRAM_CLIENT_ID
+    client_secret = credential.client_secret if credential else settings.INSTAGRAM_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Instagram OAuth is not configured. Set INSTAGRAM_CLIENT_ID and "
+                "INSTAGRAM_CLIENT_SECRET in the server environment."
+            ),
+        )
+
+    if credential:
+        credential.client_id = client_id
+        credential.client_secret = client_secret
+    else:
+        credential = Credentials(
+            company_id=company.id,
+            platform="instagram",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        db.add(credential)
+    db.commit()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="instagram",
+        authorization_url=InstagramService.get_authorization_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=str(company.id),
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in the browser to log in to Instagram and grant access.",
+    )
 
 
 @router.post("", response_model=CredentialsResponse, summary="Save platform credentials (Client ID, Secret, Platform) into Database")
@@ -759,7 +839,6 @@ def instagram_callback(
         except Exception as ex:
             return {
                 "status": "partial_success",
-                "code": clean_code,
                 "warning": f"Received authorization code, but automated token exchange failed: {str(ex)}",
                 "company_id": target_company_id,
                 "platform": "instagram",
