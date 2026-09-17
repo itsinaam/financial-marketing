@@ -34,7 +34,11 @@ def get_request_base_url(request: Request) -> str:
     Get the public base URL used by OAuth callbacks.
     """
     if settings.PUBLIC_BASE_URL:
-        return settings.PUBLIC_BASE_URL.rstrip("/")
+        base = settings.PUBLIC_BASE_URL.rstrip("/")
+        callback_suffix = f"{settings.API_V1_STR}/credentials/instagram/callback"
+        if base.endswith(callback_suffix):
+            base = base[: -len(callback_suffix)].rstrip("/")
+        return base
 
     base = str(request.base_url).rstrip("/")
     proto = request.headers.get("x-forwarded-proto")
