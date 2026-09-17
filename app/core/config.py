@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     APP_NAME: str = config("APP_NAME")
     DATABASE_URL: str = config("DATABASE_URL")
     PUBLIC_BASE_URL: str = config("PUBLIC_BASE_URL", default="")
+    INSTAGRAM_REDIRECT_URI: str = config("INSTAGRAM_REDIRECT_URI", default="")
 
     # Meta app credentials used by the one-click Instagram connection flow.
     INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")

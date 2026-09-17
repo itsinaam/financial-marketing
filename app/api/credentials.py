@@ -47,12 +47,6 @@ def get_current_callback_url(request: Request) -> str:
     """
     Get the public callback URL without query parameters.
     """
-    if settings.PUBLIC_BASE_URL:
-        return (
-            f"{settings.PUBLIC_BASE_URL.rstrip('/')}{settings.API_V1_STR}"
-            "/credentials/instagram/callback"
-        )
-
     url = str(request.url).split("?")[0].rstrip("/")
     proto = request.headers.get("x-forwarded-proto")
     if proto and url.startswith("http://"):
@@ -178,7 +172,7 @@ def connect_instagram(
     grants permissions. Instagram never sends that password to this API.
     """
     company = resolve_company(db, auth, company_id)
-    redirect_uri = (
+    redirect_uri = settings.INSTAGRAM_REDIRECT_URI or (
         f"{get_request_base_url(request)}"
         f"{settings.API_V1_STR}/credentials/instagram/callback"
     )
@@ -814,7 +808,7 @@ def instagram_callback(
                 client_id=credential.client_id,
                 client_secret=credential.client_secret,
                 code=clean_code,
-                redirect_uri=current_redirect_uri,
+                redirect_uri=settings.INSTAGRAM_REDIRECT_URI or current_redirect_uri,
             )
             access_token = token_data.get("access_token")
             ig_account_id = token_data.get("instagram_account_id")
