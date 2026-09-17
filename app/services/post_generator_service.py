@@ -70,7 +70,6 @@ def generate_caption_and_hashtags(
     extra_hashtags: list[str] | None = None,
 ) -> dict:
     """Generate a headline, caption, hashtags, and safety score tailored to the target platform."""
-    client = get_genai_client()
     tone_str = tone or "Professional"
     lang_str = language or "English (US)"
     plat_str = platform.lower().strip()
@@ -126,6 +125,7 @@ Return ONLY a JSON object (no markdown fences) with keys:
     }
 
     try:
+        client = get_genai_client()
         response = client.models.generate_content(model=TEXT_MODEL, contents=prompt_text)
         clean_json = response.text.strip()
         if clean_json.startswith("```"):
@@ -182,12 +182,12 @@ image. Produce clean photography only, using the supplied reference image(s) as 
 primary visual reference. Do not replace the real subject with a fictional product.
 """
 
-    client = get_genai_client()
     parts = [types.Part.from_text(text=combined_prompt)]
     for img in reference_images:
         parts.append(types.Part.from_bytes(data=img["bytes"], mime_type=img["mime_type"]))
 
     try:
+        client = get_genai_client()
         response = client.models.generate_content(
             model=IMAGE_MODEL,
             contents=[types.Content(role="user", parts=parts)],

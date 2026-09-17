@@ -39,7 +39,6 @@ def generate_blog_content(
     extra_hashtags: list[str] | None = None,
 ) -> dict:
     """Generate a long-form blog title + HTML body + tags tailored to the topic."""
-    client = get_genai_client()
     tone_str = tone or "Professional"
     lang_str = language or "English (US)"
 
@@ -77,6 +76,7 @@ Return ONLY a JSON object (no markdown fences) with keys:
     }
 
     try:
+        client = get_genai_client()
         response = client.models.generate_content(model=TEXT_MODEL, contents=prompt_text)
         clean_json = response.text.strip()
         if clean_json.startswith("```"):
