@@ -34,7 +34,11 @@ def find_relevant_library_image(db: Session, prompt: str, min_threshold: float =
     Embed the prompt text and find the closest-matching photo asset in the shared
     Library via cosine similarity against stored image embeddings.
     """
-    prompt_embedding = generate_text_embedding(prompt)
+    try:
+        prompt_embedding = generate_text_embedding(prompt)
+    except Exception as err:
+        logger.warning("Failed to generate prompt embedding, skipping library image search: %s", err)
+        return None
 
     assets = (
         db.query(Library)
@@ -254,11 +258,14 @@ def create_generated_post(
     image_url = None
     generated_bytes = generate_post_image(images_data, prompt, platform)
     if generated_bytes:
-        image_url = upload_library_asset(
-            file_content=generated_bytes,
-            filename=f"post_{platform}_{(reference_id or 'gen')[:8]}.png",
-            content_type="image/png",
-        )
+        try:
+            image_url = upload_library_asset(
+                file_content=generated_bytes,
+                filename=f"post_{platform}_{(reference_id or 'gen')[:8]}.png",
+                content_type="image/png",
+            )
+        except Exception as err:
+            logger.warning("Failed to upload generated post image, saving draft without image: %s", err)
 
     post = GeneratedPost(
         company_id=company_id,
