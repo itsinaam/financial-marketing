@@ -22,12 +22,20 @@ SUPPORTED_MIME_TYPES = {
 }
 
 
+# Without an explicit timeout a slow Gemini call hangs the whole HTTP request
+# until the serverless function is killed, so callers never reach their fallback.
+GENAI_TIMEOUT_MS = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "45")) * 1000
+
+
 def get_genai_client() -> genai.Client:
     """Initialize and return the Gemini API client using GEMINI_API_KEY."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY environment variable is not set.")
-    return genai.Client(api_key=api_key)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=GENAI_TIMEOUT_MS),
+    )
 
 
 def generate_image_embedding_from_bytes(image_bytes: bytes, mime_type: str = "image/jpeg") -> list[float]:
