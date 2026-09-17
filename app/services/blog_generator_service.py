@@ -136,7 +136,7 @@ def create_generated_blog(
         reference_id = custom_image_data.get("id")
         reference_image_url = custom_image_data.get("image_url")
     else:
-        match = find_relevant_library_image(db, prompt)
+        match = find_relevant_library_image(db, prompt, company_id)
         if match:
             reference_id = match["id"]
             reference_image_url = match["image_url"]

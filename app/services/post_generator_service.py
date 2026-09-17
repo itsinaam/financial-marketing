@@ -29,9 +29,14 @@ DEFAULT_IMAGE_SYSTEM_PROMPT = (
 )
 
 
-def find_relevant_library_image(db: Session, prompt: str, min_threshold: float = DEFAULT_MATCH_THRESHOLD) -> dict | None:
+def find_relevant_library_image(
+    db: Session,
+    prompt: str,
+    company_id: int | None = None,
+    min_threshold: float = DEFAULT_MATCH_THRESHOLD,
+) -> dict | None:
     """
-    Embed the prompt text and find the closest-matching photo asset in the shared
+    Embed the prompt text and find the closest-matching photo asset in the company's
     Library via cosine similarity against stored image embeddings.
     """
     try:
@@ -40,11 +45,10 @@ def find_relevant_library_image(db: Session, prompt: str, min_threshold: float =
         logger.warning("Failed to generate prompt embedding, skipping library image search: %s", err)
         return None
 
-    assets = (
-        db.query(Library)
-        .filter(Library.media_type == "photo", Library.embedding.is_not(None))
-        .all()
-    )
+    query = db.query(Library).filter(Library.media_type == "photo", Library.embedding.is_not(None))
+    if company_id is not None:
+        query = query.filter(Library.company_id == company_id)
+    assets = query.all()
     if not assets:
         return None
 
@@ -235,7 +239,7 @@ def create_generated_post(
         reference_id = custom_images_data[0].get("id")
         reference_url = custom_images_data[0].get("image_url")
     else:
-        match = find_relevant_library_image(db, prompt)
+        match = find_relevant_library_image(db, prompt, company_id)
         if match:
             reference_id = match["id"]
             reference_url = match["image_url"]

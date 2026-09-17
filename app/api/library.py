@@ -1,8 +1,9 @@
 import logging
 from typing import  Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import func
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from app.api.credentials import resolve_company
 from app.core.deps import get_db
 from app.models.library import Library
 from app.schemas.library import (
@@ -17,6 +18,7 @@ from app.services.storage_service import upload_library_asset
 logger = logging.getLogger("LibraryRoutes")
 
 router = APIRouter()
+optional_bearer = HTTPBearer(auto_error=False)
 MEDIA_TYPES = {"photo", "video", "article"}
 ARTICLE_CONTENT_TYPES = {"application/pdf", "text/plain"}
 ARTICLE_EXTENSIONS = {".pdf", ".txt"}
@@ -38,6 +40,24 @@ def serialize_library(item: Library) -> dict:
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
+
+def detect_media_type(media: UploadFile) -> str:
+    """Work out whether an upload is a photo, video or article from the file itself."""
+    content_type = (media.content_type or "").lower().split(";", 1)[0]
+    filename = (media.filename or "").lower()
+
+    if content_type.startswith("image/"):
+        return "photo"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type in ARTICLE_CONTENT_TYPES or filename.endswith(tuple(ARTICLE_EXTENSIONS)):
+        return "article"
+
+    raise HTTPException(
+        status_code=400,
+        detail="Unsupported file. Upload an image, a video, or a PDF/TXT article.",
+    )
+
 
 def validate_media_type(media_type: str) -> str:
     normalized_media_type = media_type.strip().lower()
@@ -80,10 +100,12 @@ async def upload_media(media: UploadFile, media_type: str) -> tuple[str, int, by
 
     return media_url, len(media_content), media_content
 
-def get_library_or_404(library_id: str, db: Session) -> Library:
+def get_library_or_404(library_id: str, db: Session, company=None) -> Library:
     library_item = db.query(Library).filter(Library.id == library_id).first()
     if not library_item:
         raise HTTPException(status_code=404, detail="Library item not found")
+    if company is not None and library_item.company_id != company.id:
+        raise HTTPException(status_code=403, detail="This asset does not belong to your account.")
     return library_item
 
 
@@ -93,8 +115,8 @@ def get_library_or_404(library_id: str, db: Session) -> Library:
     status_code=status.HTTP_201_CREATED,
     summary="Upload a library asset",
     description=(
-        "Upload one asset using multipart/form-data. Set `media_type` to `photo` "
-        "for image files, `video` for video files, or `article` for PDF and TXT files."
+        "Upload one asset using multipart/form-data. `media_type` is optional - when "
+        "it is omitted it is detected from the uploaded file (image, video, or PDF/TXT)."
     ),
     response_description="The newly created library asset",
     responses={
@@ -105,16 +127,19 @@ def get_library_or_404(library_id: str, db: Session) -> Library:
 async def create_library_item(
     name: str = Form(..., description="Display name for the asset", examples=["Product launch video"]),
     type: str = Form(..., description="Library category selected by the user", examples=["Robotics"]),
-    media_type: MediaTypeLiteral = Form(
-        ..., description="Asset kind: photo, video, or article"
+    media_type: Optional[MediaTypeLiteral] = Form(
+        None, description="Asset kind: photo, video, or article. Detected from the file when omitted."
     ),
     media: UploadFile = File(
         ...,
         description="Image for photo, video file for video, or PDF/TXT file for article",
     ),
+    company_id: Optional[int] = Form(None, description="Optional company ID override (Admin / Testing)"),
     db: Session = Depends(get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ):
-    normalized_media_type = validate_media_type(media_type)
+    company = resolve_company(db, auth, company_id)
+    normalized_media_type = validate_media_type(media_type) if media_type else detect_media_type(media)
     media_url, media_size, media_bytes = await upload_media(media, normalized_media_type)
 
     embedding = None
@@ -129,6 +154,7 @@ async def create_library_item(
             logger.warning("Failed to generate image embedding for '%s': %s", name, error)
 
     library_item = Library(
+        company_id=company.id,
         name=name,
         type=type,
         media_type=normalized_media_type,
@@ -147,9 +173,9 @@ async def create_library_item(
     response_model=LibraryListResponse,
     summary="List library assets",
     description=(
-        "Return library assets ordered by newest first. Optionally filter the returned "
-        "items by `type` and/or `media_type`; the total counts always include all "
-        "library assets."
+        "Return the current company's library assets, newest first. Optionally filter the "
+        "returned items by `type` and/or `media_type`; the total counts always include all "
+        "of the company's assets."
     ),
     response_description="Library assets with media-type counts and storage totals",
     responses={400: {"description": "Invalid media type filter"}},
@@ -166,22 +192,32 @@ def list_library_items(
         description="Optional exact-match library category filter",
         examples=["Robotics"],
     ),
+    company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
     db: Session = Depends(get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ):
-    query = db.query(Library)
+    company = resolve_company(db, auth, company_id)
+    owned = db.query(Library).filter(Library.company_id == company.id)
+
+    query = owned
     if media_type is not None:
         query = query.filter(Library.media_type == validate_media_type(media_type))
     if asset_type is not None:
         query = query.filter(Library.type == asset_type)
 
     library_items = query.order_by(Library.created_at.desc()).all()
-    total_storage_bytes = db.query(func.coalesce(func.sum(Library.size), 0)).scalar() or 0
+    all_items = owned.all()
+
+    def count_of(kind: str) -> int:
+        return sum(1 for item in all_items if item.media_type == kind)
+
+    total_storage_bytes = sum(item.size or 0 for item in all_items)
     return {
         "items": [serialize_library(item) for item in library_items],
-        "total_assets": db.query(func.count(Library.id)).scalar() or 0,
-        "total_photo": db.query(func.count(Library.id)).filter(Library.media_type == "photo").scalar() or 0,
-        "total_article": db.query(func.count(Library.id)).filter(Library.media_type == "article").scalar() or 0,
-        "total_video": db.query(func.count(Library.id)).filter(Library.media_type == "video").scalar() or 0,
+        "total_assets": len(all_items),
+        "total_photo": count_of("photo"),
+        "total_article": count_of("article"),
+        "total_video": count_of("video"),
         "total_storage_bytes": total_storage_bytes,
         "total_storage_kb": round(total_storage_bytes / 1024, 2),
         "total_storage_mb": round(total_storage_bytes / (1024 * 1024), 2),
@@ -193,8 +229,14 @@ def list_library_items(
     response_model=LibraryItemResponse,
     summary="Get a library asset by ID",
 )
-def get_library_item(library_id: str, db: Session = Depends(get_db)):
-    return serialize_library(get_library_or_404(library_id, db))
+def get_library_item(
+    library_id: str,
+    company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
+    db: Session = Depends(get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+):
+    company = resolve_company(db, auth, company_id)
+    return serialize_library(get_library_or_404(library_id, db, company))
 
 
 @router.put(
@@ -208,9 +250,12 @@ async def update_library_item(
     type: Optional[str] = Form(None),
     media_type: Optional[str] = Form(None),
     media: Optional[UploadFile] = File(None),
+    company_id: Optional[int] = Form(None, description="Optional company ID override (Admin / Testing)"),
     db: Session = Depends(get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ):
-    library_item = get_library_or_404(library_id, db)
+    company = resolve_company(db, auth, company_id)
+    library_item = get_library_or_404(library_id, db, company)
 
     if name is not None:
         library_item.name = name
@@ -252,8 +297,14 @@ async def update_library_item(
     response_model=LibraryDeleteResponse,
     summary="Delete a library asset",
 )
-def delete_library_item(library_id: str, db: Session = Depends(get_db)):
-    library_item = get_library_or_404(library_id, db)
+def delete_library_item(
+    library_id: str,
+    company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
+    db: Session = Depends(get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+):
+    company = resolve_company(db, auth, company_id)
+    library_item = get_library_or_404(library_id, db, company)
     db.delete(library_item)
     db.commit()
     return {"message": "Library item deleted successfully", "id": library_id}
