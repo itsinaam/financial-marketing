@@ -82,6 +82,24 @@ class StripeService:
             )
 
     @staticmethod
+    def retrieve_checkout_session(session_id: str) -> dict:
+        """
+        Fetch a Checkout Session from Stripe to confirm whether it was actually paid.
+        """
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+            return {
+                "payment_status": getattr(session, "payment_status", None),
+                "status": getattr(session, "status", None),
+                "payment_intent": getattr(session, "payment_intent", None),
+            }
+        except stripe.error.StripeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Stripe Session Retrieve Error: {str(e)}"
+            )
+
+    @staticmethod
     def construct_webhook_event(payload: bytes, sig_header: str) -> stripe.Event:
         """
         Constructs and verifies a Stripe Webhook Event signature.

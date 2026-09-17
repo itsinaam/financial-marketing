@@ -47,6 +47,46 @@ def create_checkout_session(
     
     return session_data
 
+@router.post(
+    "/verify-session/{session_id}",
+    response_model=PaymentResponse,
+    summary="Confirm with Stripe whether a checkout session was actually paid",
+)
+def verify_checkout_session(
+    session_id: str,
+    db: Session = Depends(deps.get_db),
+    current_user: Company = Depends(deps.get_current_user),
+) -> Any:
+    """
+    Ask Stripe directly whether this checkout session was paid and update the
+    payment record accordingly. Call this from the success page after the Stripe
+    redirect so the plan activates without waiting on the webhook.
+    """
+    payment = (
+        db.query(Payment)
+        .filter(
+            Payment.stripe_checkout_session_id == session_id,
+            Payment.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No payment found for checkout session '{session_id}'.",
+        )
+
+    if payment.status != "succeeded":
+        session = StripeService.retrieve_checkout_session(session_id)
+        if session.get("payment_status") == "paid":
+            payment.status = "succeeded"
+            payment.stripe_payment_intent_id = session.get("payment_intent")
+            db.commit()
+            db.refresh(payment)
+
+    return payment
+
+
 @router.get("/history",response_model=List[PaymentResponse], summary="Get user payment transaction history")
 def get_my_payments(
     db: Session = Depends(deps.get_db),
@@ -86,13 +126,17 @@ async def stripe_webhook(
     event = StripeService.construct_webhook_event(payload, stripe_signature)
     
     event_type = event["type"]
-    event_data = event["data"]["object"]
+    # Stripe resource objects don't support .get(), so work with a plain dict.
+    event_data = event["data"]["object"].to_dict()
     
     if event_type == "checkout.session.completed":
         session_id = event_data.get("id")
         payment = db.query(Payment).filter(Payment.stripe_checkout_session_id == session_id).first()
         if payment:
-            payment.status = "succeeded"
+            # Async payment methods can complete the session while still unpaid.
+            if event_data.get("payment_status") == "paid":
+                payment.status = "succeeded"
+            payment.stripe_payment_intent_id = event_data.get("payment_intent")
             db.commit()
             
     elif event_type == "payment_intent.succeeded":

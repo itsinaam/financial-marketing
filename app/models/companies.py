@@ -27,21 +27,16 @@ class Company(Base):
 
     @property
     def plan(self) -> dict | None:
-        if not self.payments:
+        # Only a paid payment counts as an active plan. A checkout session that was
+        # opened but never paid stays "pending" and must not unlock the plan.
+        succeeded = [p for p in self.payments if p.status == "succeeded"]
+        if not succeeded:
             return None
 
-        # Prioritize successful payments; if none are succeeded yet, use the latest created payment
-        succeeded = [p for p in self.payments if p.status == "succeeded"]
-        if succeeded:
-            chosen = sorted(
-                succeeded,
-                key=lambda p: (p.created_at.timestamp() if p.created_at else 0, p.id or 0),
-            )[-1]
-        else:
-            chosen = sorted(
-                self.payments,
-                key=lambda p: (p.created_at.timestamp() if p.created_at else 0, p.id or 0),
-            )[-1]
+        chosen = sorted(
+            succeeded,
+            key=lambda p: (p.created_at.timestamp() if p.created_at else 0, p.id or 0),
+        )[-1]
 
         desc = chosen.description or ""
         prefix = "Checkout Session for "
