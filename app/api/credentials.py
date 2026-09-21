@@ -1043,19 +1043,19 @@ def x_callback(
     """
     if error:
         return RedirectResponse(
-            url="https://financial-marketing.vercel.app/integrations?x=error",
+            url="https://financial-markett.vercel.app/integrations?x=error",
             status_code=302,
         )
     if not code:
         return RedirectResponse(
-            url="https://financial-marketing.vercel.app/integrations?x=missing_code",
+            url="https://financial-markett.vercel.app/integrations?x=missing_code",
             status_code=302,
         )
 
     target_company_id, code_verifier = TwitterService.parse_state(state or "")
     if not target_company_id or not code_verifier:
         return RedirectResponse(
-            url="https://financial-marketing.vercel.app/integrations?x=invalid_state",
+            url="https://financial-markett.vercel.app/integrations?x=invalid_state",
             status_code=302,
         )
 
@@ -1088,7 +1088,7 @@ def x_callback(
             db.refresh(credential)
 
             return RedirectResponse(
-                url="https://financial-marketing.vercel.app/integrations?x=success",
+                url="https://financial-markett.vercel.app/integrations?x=success",
                 status_code=302,
             )
         except Exception as ex:
@@ -1099,11 +1099,11 @@ def x_callback(
                     "connection flow and do not refresh/reopen the callback URL."
                 )
             return RedirectResponse(
-                url="https://financial-marketing.vercel.app/integrations?x=error",
+                url="https://financial-markett.vercel.app/integrations?x=error",
                 status_code=302,
             )
 
     return RedirectResponse(
-        url="https://financial-marketing.vercel.app/integrations?x=not_configured",
+        url="https://financial-markett.vercel.app/integrations?x=not_configured",
         status_code=302,
     )
