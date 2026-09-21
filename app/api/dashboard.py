@@ -48,6 +48,30 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _approval_activity(batch: list, approved_at: datetime) -> ActivityItem:
+    kinds = {kind for kind, _, _, _ in batch}
+    platforms = sorted({platform for _, _, platform, _ in batch})
+    if len(batch) == 1:
+        kind, record, platform, title = batch[0]
+        return ActivityItem(
+            type="approved",
+            message=f"Approved {kind} for {platform}: {title}",
+            content_type=kind,
+            item_id=record.id,
+            platform=platform,
+            at=approved_at,
+        )
+
+    noun = f"{next(iter(kinds))}s" if len(kinds) == 1 else "items"
+    return ActivityItem(
+        type="approved",
+        message=f"Approved {len(batch)} {noun} for {', '.join(platforms)}",
+        content_type=next(iter(kinds)) if len(kinds) == 1 else None,
+        platform=platforms[0] if len(platforms) == 1 else None,
+        at=approved_at,
+    )
+
+
 @router.get("", response_model=DashboardResponse, summary="Everything the dashboard shows, in one call")
 def get_dashboard(
     company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
@@ -81,6 +105,7 @@ def get_dashboard(
     published_platforms = set()
     latest_published_this_week = None
     activity: List[ActivityItem] = []
+    approval_batches: dict = {}
 
     for kind, record in records:
         platform = (record.platform or "").lower()
@@ -130,6 +155,10 @@ def get_dashboard(
                     at=created_at,
                 )
             )
+        approved_at = _as_utc(record.approved_at)
+        if approved_at:
+            approval_batches.setdefault(approved_at, []).append((kind, record, platform, title))
+
         if record.is_posted and posted_at:
             activity.append(
                 ActivityItem(
@@ -152,6 +181,10 @@ def get_dashboard(
                     at=_as_utc(record.updated_at) or created_at or now_utc,
                 )
             )
+
+    # Everything approved in one action shares a timestamp, so one batch is one line.
+    for approved_at, batch in approval_batches.items():
+        activity.append(_approval_activity(batch, approved_at))
 
     library_items = db.query(Library).filter(Library.company_id == company.id).all()
     for asset in library_items:

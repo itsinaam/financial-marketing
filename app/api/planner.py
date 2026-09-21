@@ -1,5 +1,5 @@
 import calendar as calendar_module
-from datetime import date as date_cls, timedelta
+from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -103,6 +103,7 @@ def generate_plan(
     )
 
     approved = payload.mode == "auto_schedule"
+    approved_at = datetime.now(timezone.utc) if approved else None
     created: List[GeneratedPost] = []
 
     for index, entry in enumerate(plan):
@@ -122,6 +123,7 @@ def generate_plan(
             language=payload.language,
             ai_safety_score=entry["ai_safety_score"],
             is_approved=approved,
+            approved_at=approved_at,
             is_posted=False,
         )
         db.add(post)

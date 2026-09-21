@@ -237,7 +237,14 @@ def approve_blogs(
     found_ids = {b.id for b in blogs}
     missing_ids = [bid for bid in payload.blog_ids if bid not in found_ids]
 
+    decided_at = datetime.now(timezone.utc)
     for blog in blogs:
+        # Stamp only the unapproved -> approved transition, so approving something
+        # twice doesn't log a second approval.
+        if payload.is_approved and not blog.is_approved:
+            blog.approved_at = decided_at
+        elif not payload.is_approved:
+            blog.approved_at = None
         blog.is_approved = payload.is_approved
     db.commit()
 

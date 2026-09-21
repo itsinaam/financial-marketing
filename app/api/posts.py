@@ -290,7 +290,14 @@ def approve_posts(
     found_ids = {p.id for p in posts}
     missing_ids = [pid for pid in payload.post_ids if pid not in found_ids]
 
+    decided_at = datetime.now(timezone.utc)
     for post in posts:
+        # Stamp only the unapproved -> approved transition, so approving something
+        # twice doesn't log a second approval.
+        if payload.is_approved and not post.is_approved:
+            post.approved_at = decided_at
+        elif not payload.is_approved:
+            post.approved_at = None
         post.is_approved = payload.is_approved
     db.commit()
 

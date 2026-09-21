@@ -41,7 +41,7 @@ class TopPost(BaseModel):
 
 
 class ActivityItem(BaseModel):
-    type: Literal["drafted", "published", "publish_failed", "library_added"]
+    type: Literal["drafted", "approved", "published", "publish_failed", "library_added"]
     message: str
     content_type: Optional[str] = None
     item_id: Optional[str] = None

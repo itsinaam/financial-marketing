@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -173,7 +174,14 @@ def decide_approval(
             .all()
         )
 
+    decided_at = datetime.now(timezone.utc)
     for item in (*posts, *blogs):
+        # Stamp only the unapproved -> approved transition, so approving something
+        # twice doesn't log a second approval.
+        if payload.is_approved and not item.is_approved:
+            item.approved_at = decided_at
+        elif not payload.is_approved:
+            item.approved_at = None
         item.is_approved = payload.is_approved
     db.commit()
 

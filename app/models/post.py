@@ -34,6 +34,7 @@ class GeneratedPost(Base):
     start_time = Column(String(50), nullable=True)
 
     is_approved = Column(Boolean, default=False, nullable=False, server_default="false")
+    approved_at = Column(DateTime(timezone=True), nullable=True)
     is_posted = Column(Boolean, default=False, nullable=False, server_default="false")
     posted_at = Column(DateTime(timezone=True), nullable=True)
     post_error = Column(Text, nullable=True)
