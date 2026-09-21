@@ -226,6 +226,71 @@ def connect_instagram(
     )
 
 
+@router.get(
+    "/x/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the X OAuth URL for a one-click account connection",
+)
+def connect_x(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """Prepare X OAuth without asking the user for X credentials."""
+    company = resolve_company(db, auth, company_id)
+    redirect_uri = settings.X_REDIRECT_URI or (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/x/callback"
+    )
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform == "x",
+        )
+        .first()
+    )
+    client_id = credential.client_id if credential else settings.X_CLIENT_ID
+    client_secret = credential.client_secret if credential else settings.X_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "X OAuth is not configured. Set X_CLIENT_ID and X_CLIENT_SECRET "
+                "in the server environment."
+            ),
+        )
+
+    if credential:
+        credential.client_id = client_id
+        credential.client_secret = client_secret
+    else:
+        credential = Credentials(
+            company_id=company.id,
+            platform="x",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        db.add(credential)
+    db.commit()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="x",
+        authorization_url=TwitterService.get_authorization_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            company_id=str(company.id),
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in the browser to log in to X and grant access.",
+    )
+
+
 @router.post("", response_model=CredentialsResponse, summary="Save platform credentials (Client ID, Secret, Platform) into Database")
 def save_credentials(
     payload: SaveCredentialsRequest,

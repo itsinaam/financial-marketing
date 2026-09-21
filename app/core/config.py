@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")
     INSTAGRAM_CLIENT_SECRET: str = config("INSTAGRAM_CLIENT_SECRET", default="")
 
+    # X app credentials used by the one-click X connection flow.
+    X_REDIRECT_URI: str = config("X_REDIRECT_URI", default="")
+    X_CLIENT_ID: str = config("X_CLIENT_ID", default="")
+    X_CLIENT_SECRET: str = config("X_CLIENT_SECRET", default="")
+
     SECRET_KEY: str = config("SECRET_KEY")
     ALGORITHM: str = config("ALGORITHM")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = config("ACCESS_TOKEN_EXPIRE_MINUTES")
