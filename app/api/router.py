@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner
+from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner, settings
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -12,4 +12,5 @@ api_router.include_router(blogs.router, prefix="/blogs", tags=["Blogs"])
 api_router.include_router(approvals.router, prefix="/approval-queue", tags=["Approval Queue"])
 api_router.include_router(calendar.router, prefix="/calendar", tags=["Calendar"])
 api_router.include_router(planner.router, prefix="/planner", tags=["Planner"])
+api_router.include_router(settings.router, prefix="/settings", tags=["Settings"])
 

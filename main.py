@@ -44,6 +44,15 @@ async def lifespan(app: FastAPI):
             connection.execute(text(
                 "ALTER TABLE libraryy ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id)"
             ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS first_name VARCHAR(100)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_name VARCHAR(100)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"
+            ))
 
         # 2. Seed default Super Admin user
         db = SessionLocal()

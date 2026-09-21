@@ -59,6 +59,7 @@ class UserResponse(UserBase):
     id: int
     is_superuser: bool
     created_at: datetime | None = None
+    avatar_url: str | None = None
     plan: PlanDetails | None = None
     payments: List[PaymentResponse] = []
 
