@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, File, UploadFile, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import RedirectResponse
 from jose import jwt, JWTError
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -790,19 +791,16 @@ def instagram_callback(
     - Automatically updates database record
     """
     if error:
-        return {
-            "status": "error",
-            "error": error,
-            "error_reason": error_reason,
-            "error_description": error_description,
-        }
-    if not code:
-        return {
-            "status": "error",
-            "error": "missing_code",
-            "message": "No authorization code was provided in callback. Please initiate OAuth from authorization_url.",
-        }
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?instagram=error",
+            status_code=302,
+        )
 
+    if not code:
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?instagram=missing_code",
+            status_code=302,
+        )
     # Meta sometimes appends #_ to the authorization code
     clean_code = code.split("#_")[0]
     current_redirect_uri = get_current_callback_url(request)
@@ -854,15 +852,10 @@ def instagram_callback(
                 db.commit()
                 db.refresh(credential)
 
-                return {
-                    "status": "success",
-                    "message": "🎉 Instagram account successfully connected! Long-lived access token and Instagram Account ID saved in database.",
-                    "company_id": target_company_id,
-                    "platform": "instagram",
-                    "instagram_account_id": credential.organization_id,
-                    "username": username,
-                    "next_step": "You can now publish posts using POST /api/credentials/post with platform='instagram'.",
-                }
+                return RedirectResponse(
+                    url="https://financial-markett.vercel.app/integrations",
+                    status_code=302,
+                )
         except Exception as ex:
             return {
                 "status": "partial_success",

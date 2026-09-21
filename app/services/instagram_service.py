@@ -1,3 +1,4 @@
+import time
 import urllib.parse
 from typing import Dict, Any, Optional
 import requests
@@ -213,16 +214,14 @@ class InstagramService:
         return (str(fallback_user_id) if fallback_user_id else None), None, None
 
     @staticmethod
-    def create_post(
+    def create_media_container(
         access_token: str,
         instagram_account_id: str,
         image_url: str,
         caption: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> str:
         """
-        Publishes a photo/media post to Instagram using the 2-step Instagram Graph API flow:
-        Step 1: Create a media container with image_url and caption.
-        Step 2: Publish the media container.
+        Create Instagram media container using the Graph API.
         """
         if not instagram_account_id:
             raise HTTPException(
@@ -230,65 +229,75 @@ class InstagramService:
                 detail="Instagram Account ID is missing. Please reconnect your Instagram account.",
             )
 
-        # Step 1: Create Media Container
-        container_endpoint = f"{FACEBOOK_GRAPH_URL}/{instagram_account_id}/media"
-        container_payload = {
+        url = f"{INSTAGRAM_GRAPH_URL}/{instagram_account_id}/media"
+        payload = {
             "image_url": image_url,
             "access_token": access_token,
         }
         if caption and caption.strip():
-            container_payload["caption"] = caption.strip()
+            payload["caption"] = caption.strip()
 
         try:
-            c_res = requests.post(container_endpoint, data=container_payload, timeout=30)
-            if c_res.status_code != 200:
-                ig_container = f"{INSTAGRAM_GRAPH_URL}/{instagram_account_id}/media"
-                c_res_ig = requests.post(ig_container, data=container_payload, timeout=30)
-                if c_res_ig.status_code == 200:
-                    c_res = c_res_ig
-
-            c_data = c_res.json()
-        except requests.RequestException as e:
+            response = requests.post(url, data=payload, timeout=30)
+        except requests.RequestException as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Network error while creating Instagram media container: {str(e)}",
-            )
+                detail=f"Network error while creating Instagram media container: {str(exc)}",
+            ) from exc
 
-        creation_id = c_data.get("id")
-        if not creation_id:
-            err = c_data.get("error", {}).get("message", "Unknown Meta error")
+        if response.status_code not in (200, 201):
+            error_detail = response.text
             if "127.0.0.1" in image_url or "localhost" in image_url:
-                err += " (Note: Meta servers cannot fetch images from localhost/127.0.0.1. Please use a public image URL or test on your deployed production domain.)"
+                error_detail += " (Meta cannot fetch images from localhost/127.0.0.1; use a public URL)"
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Instagram Media Container creation failed: {err}",
+                detail=f"Instagram media container creation failed: {error_detail}",
             )
 
-        # Step 2: Publish Media Container
-        publish_endpoint = f"{FACEBOOK_GRAPH_URL}/{instagram_account_id}/media_publish"
-        publish_payload = {
+        data = response.json()
+        creation_id = data.get("id")
+        if not creation_id:
+            err = data.get("error", {}).get("message", "Unknown Meta error")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Instagram media container creation failed: {err}",
+            )
+
+        return str(creation_id)
+
+    @staticmethod
+    def publish_media(
+        access_token: str,
+        instagram_account_id: str,
+        creation_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Publish an Instagram media container.
+        """
+        url = f"{INSTAGRAM_GRAPH_URL}/{instagram_account_id}/media_publish"
+        payload = {
             "creation_id": creation_id,
             "access_token": access_token,
         }
 
         try:
-            p_res = requests.post(publish_endpoint, data=publish_payload, timeout=30)
-            if p_res.status_code != 200:
-                ig_publish = f"{INSTAGRAM_GRAPH_URL}/{instagram_account_id}/media_publish"
-                p_res_ig = requests.post(ig_publish, data=publish_payload, timeout=30)
-                if p_res_ig.status_code == 200:
-                    p_res = p_res_ig
-
-            p_data = p_res.json()
-        except requests.RequestException as e:
+            response = requests.post(url, data=payload, timeout=30)
+        except requests.RequestException as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Network error while publishing Instagram post: {str(e)}",
+                detail=f"Network error while publishing Instagram post: {str(exc)}",
+            ) from exc
+
+        if response.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Instagram publish failed: {response.text}",
             )
 
-        post_id = p_data.get("id")
+        data = response.json()
+        post_id = data.get("id")
         if not post_id:
-            err = p_data.get("error", {}).get("message", "Unknown Meta publish error")
+            err = data.get("error", {}).get("message", "Unknown Meta publish error")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Instagram Publish failed: {err}",
@@ -300,3 +309,28 @@ class InstagramService:
             "creation_id": creation_id,
             "target": "Instagram",
         }
+
+    @staticmethod
+    def create_post(
+        access_token: str,
+        instagram_account_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a media container, wait briefly for Meta to process it, then publish.
+        """
+        creation_id = InstagramService.create_media_container(
+            access_token=access_token,
+            instagram_account_id=instagram_account_id,
+            image_url=image_url,
+            caption=caption,
+        )
+
+        time.sleep(5)
+
+        return InstagramService.publish_media(
+            access_token=access_token,
+            instagram_account_id=instagram_account_id,
+            creation_id=creation_id,
+        )
