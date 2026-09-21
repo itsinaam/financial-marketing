@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")
     INSTAGRAM_CLIENT_SECRET: str = config("INSTAGRAM_CLIENT_SECRET", default="")
 
+    # Meta app credentials used by the one-click Facebook Page connection flow.
+    FACEBOOK_REDIRECT_URI: str = config("FACEBOOK_REDIRECT_URI", default="")
+    FACEBOOK_CLIENT_ID: str = config("FACEBOOK_CLIENT_ID", default="")
+    FACEBOOK_CLIENT_SECRET: str = config("FACEBOOK_CLIENT_SECRET", default="")
+
     # X app credentials used by the one-click X connection flow.
     X_REDIRECT_URI: str = config("X_REDIRECT_URI", default="")
     X_CLIENT_ID: str = config("X_CLIENT_ID", default="")

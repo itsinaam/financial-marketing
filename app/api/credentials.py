@@ -291,6 +291,71 @@ def connect_x(
     )
 
 
+@router.get(
+    "/facebook/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the Facebook OAuth URL for a one-click Page connection",
+)
+def connect_facebook(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """Prepare Facebook OAuth without asking the user for Facebook credentials."""
+    company = resolve_company(db, auth, company_id)
+    redirect_uri = settings.FACEBOOK_REDIRECT_URI or (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/facebook/callback"
+    )
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform == "facebook",
+        )
+        .first()
+    )
+    client_id = credential.client_id if credential else settings.FACEBOOK_CLIENT_ID
+    client_secret = credential.client_secret if credential else settings.FACEBOOK_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Facebook OAuth is not configured. Set FACEBOOK_CLIENT_ID and "
+                "FACEBOOK_CLIENT_SECRET in the server environment."
+            ),
+        )
+
+    if credential:
+        credential.client_id = client_id
+        credential.client_secret = client_secret
+    else:
+        credential = Credentials(
+            company_id=company.id,
+            platform="facebook",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        db.add(credential)
+    db.commit()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="facebook",
+        authorization_url=FacebookService.get_authorization_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=str(company.id),
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in the browser to log in to Facebook and select a Page.",
+    )
+
+
 @router.post("", response_model=CredentialsResponse, summary="Save platform credentials (Client ID, Secret, Platform) into Database")
 def save_credentials(
     payload: SaveCredentialsRequest,
@@ -968,7 +1033,7 @@ def facebook_callback(
             "message": "No authorization code was provided in callback. Please initiate OAuth from authorization_url.",
         }
 
-    current_redirect_uri = get_current_callback_url(request)
+    current_redirect_uri = settings.FACEBOOK_REDIRECT_URI or get_current_callback_url(request)
 
     target_company_id = None
     if state:
@@ -1001,15 +1066,10 @@ def facebook_callback(
             db.commit()
             db.refresh(credential)
 
-            return {
-                "status": "success",
-                "message": "🎉 Facebook Page successfully connected! Page access token saved in database.",
-                "company_id": target_company_id,
-                "platform": "facebook",
-                "page_id": credential.organization_id,
-                "page_name": token_data.get("page_name"),
-                "next_step": "You can now publish posts using POST /api/credentials/post with platform='facebook'.",
-            }
+            return RedirectResponse(
+                url="https://financial-markett.vercel.app/integrations?facebook=success",
+                status_code=302,
+            )
         except Exception as ex:
             return {
                 "status": "partial_success",
