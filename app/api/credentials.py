@@ -1042,23 +1042,26 @@ def x_callback(
     - Saves the tokens (and their expiry) to the database
     """
     if error:
-        return {"status": "error", "error": error}
+        return RedirectResponse(
+            url="https://financial-marketing.vercel.app/integrations?x=error",
+            status_code=302,
+        )
     if not code:
-        return {
-            "status": "error",
-            "error": "missing_code",
-            "message": "No authorization code was provided in callback. Please initiate OAuth from authorization_url.",
-        }
+        return RedirectResponse(
+            url="https://financial-marketing.vercel.app/integrations?x=missing_code",
+            status_code=302,
+        )
 
     target_company_id, code_verifier = TwitterService.parse_state(state or "")
     if not target_company_id or not code_verifier:
-        return {
-            "status": "error",
-            "error": "invalid_state",
-            "message": "Missing or invalid state param. Please initiate OAuth from authorization_url again.",
-        }
+        return RedirectResponse(
+            url="https://financial-marketing.vercel.app/integrations?x=invalid_state",
+            status_code=302,
+        )
 
-    current_redirect_uri = get_current_callback_url(request)
+    # Use the same exact URI that was sent in the authorization request.
+    # X rejects the code if the callback URI differs even slightly.
+    current_redirect_uri = settings.X_REDIRECT_URI or get_current_callback_url(request)
 
     credential = (
         db.query(Credentials)
@@ -1084,26 +1087,23 @@ def x_callback(
             db.commit()
             db.refresh(credential)
 
-            return {
-                "status": "success",
-                "message": "🎉 X (Twitter) account successfully connected! Access token saved in database.",
-                "company_id": int(target_company_id),
-                "platform": "x",
-                "username": token_data.get("username"),
-                "next_step": "You can now publish posts using POST /api/credentials/post with platform='x'.",
-            }
+            return RedirectResponse(
+                url="https://financial-marketing.vercel.app/integrations?x=success",
+                status_code=302,
+            )
         except Exception as ex:
-            return {
-                "status": "partial_success",
-                "code": code,
-                "warning": f"Received authorization code, but automated token exchange failed: {str(ex)}",
-                "company_id": int(target_company_id),
-                "platform": "x",
-            }
+            warning = str(ex)
+            if "authorization code was invalid" in warning.lower():
+                warning = (
+                    "X authorization code is invalid or already used. Start a fresh "
+                    "connection flow and do not refresh/reopen the callback URL."
+                )
+            return RedirectResponse(
+                url="https://financial-marketing.vercel.app/integrations?x=error",
+                status_code=302,
+            )
 
-    return {
-        "status": "success",
-        "code": code,
-        "state": state,
-        "message": "Authorization code received successfully, but no matching X credential found in database.",
-    }
+    return RedirectResponse(
+        url="https://financial-marketing.vercel.app/integrations?x=not_configured",
+        status_code=302,
+    )
