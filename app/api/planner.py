@@ -15,6 +15,7 @@ from app.schemas.planner import (
     PlannerQueueResponse,
 )
 from app.services.planner_service import generate_content_plan
+from app.services.notification_service import notify, titles_summary
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
@@ -132,6 +133,15 @@ def generate_plan(
     db.commit()
     for post in created:
         db.refresh(post)
+
+    if not approved:
+        notify(
+            db,
+            company.id,
+            "ready_for_approval",
+            f"The planner drafted {len(created)} post(s) for {start.isoformat()} to {end.isoformat()}, "
+            f"ready for approval: {titles_summary([p.title for p in created])}",
+        )
 
     note = None
     if requested > count:

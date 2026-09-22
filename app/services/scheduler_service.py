@@ -11,6 +11,7 @@ from app.models.post import GeneratedPost
 from app.models.blog import GeneratedBlog
 from app.services.post_generator_service import publish_post_to_platform
 from app.services.blog_generator_service import publish_blog_to_platform
+from app.services.notification_service import notify
 
 logger = logging.getLogger("SchedulerService")
 
@@ -102,11 +103,21 @@ def check_and_publish_due_posts(db: Session) -> list[dict]:
             post.post_error = None
             db.commit()
             logger.info("Scheduled post '%s' published successfully to %s.", post.id, post.platform)
+            notify(db, post.company_id, "published", f"Published scheduled post to {post.platform}: {post.title or post.headline}")
             results.append({"post_id": post.id, "platform": post.platform, "status": "success", "details": detail})
         except Exception as err:
+            # A failed item stays due and is retried every tick; only alert on a new error.
+            is_new_error = post.post_error != str(err)
             post.is_posted = False
             post.post_error = str(err)
             db.commit()
+            if is_new_error:
+                notify(
+                    db,
+                    post.company_id,
+                    "failed",
+                    f"Couldn't publish scheduled post to {post.platform}: {post.title or post.headline} - {err}",
+                )
             logger.error("Scheduled post '%s' failed to publish: %s", post.id, err)
             results.append({"post_id": post.id, "platform": post.platform, "status": "failed", "error": str(err)})
 
@@ -154,11 +165,21 @@ def check_and_publish_due_blogs(db: Session) -> list[dict]:
             blog.post_error = None
             db.commit()
             logger.info("Scheduled blog '%s' published successfully to %s.", blog.id, blog.platform)
+            notify(db, blog.company_id, "published", f"Published scheduled blog to {blog.platform}: {blog.title}")
             results.append({"blog_id": blog.id, "platform": blog.platform, "status": "success", "details": detail})
         except Exception as err:
+            # A failed item stays due and is retried every tick; only alert on a new error.
+            is_new_error = blog.post_error != str(err)
             blog.is_posted = False
             blog.post_error = str(err)
             db.commit()
+            if is_new_error:
+                notify(
+                    db,
+                    blog.company_id,
+                    "failed",
+                    f"Couldn't publish scheduled blog to {blog.platform}: {blog.title} - {err}",
+                )
             logger.error("Scheduled blog '%s' failed to publish: %s", blog.id, err)
             results.append({"blog_id": blog.id, "platform": blog.platform, "status": "failed", "error": str(err)})
 

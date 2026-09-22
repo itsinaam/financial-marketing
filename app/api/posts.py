@@ -19,6 +19,7 @@ from app.schemas.posts import (
 )
 from app.services.post_generator_service import create_generated_post, publish_post_to_platform
 from app.services.storage_service import upload_library_asset
+from app.services.notification_service import notify, titles_summary
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
@@ -177,6 +178,13 @@ async def generate_posts(
             f"platform ({len(generated_posts)} total) to stay within the AI generation rate limit."
         )
 
+    notify(
+        db,
+        company.id,
+        "ready_for_approval",
+        f"{len(generated_posts)} new post(s) ready for approval: "
+        f"{titles_summary([p.title or p.headline for p in generated_posts])}",
+    )
     return GeneratePostResult(status="success", count=len(generated_posts), posts=generated_posts, note=note)
 
 
@@ -337,14 +345,18 @@ def publish_post(
     try:
         result = publish_post_to_platform(post, credential)
     except RuntimeError as err:
+        is_new_error = post.post_error != str(err)
         post.post_error = str(err)
         db.commit()
+        if is_new_error:
+            notify(db, company.id, "failed", f"Couldn't publish to {post.platform}: {post.title or post.headline} - {err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
     post.is_posted = True
     post.posted_at = datetime.now(timezone.utc)
     post.post_error = None
     db.commit()
+    notify(db, company.id, "published", f"Published to {post.platform}: {post.title or post.headline}")
 
     return PublishPostResponse(
         status="success",

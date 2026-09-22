@@ -18,6 +18,7 @@ from app.schemas.blogs import (
 )
 from app.services.blog_generator_service import create_generated_blog, publish_blog_to_platform
 from app.services.storage_service import upload_library_asset
+from app.services.notification_service import notify, titles_summary
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
@@ -124,6 +125,12 @@ async def generate_blogs(
         )
         generated_blogs.append(blog)
 
+    notify(
+        db,
+        company.id,
+        "ready_for_approval",
+        f"{len(generated_blogs)} new blog(s) ready for approval: {titles_summary([b.title for b in generated_blogs])}",
+    )
     return GenerateBlogResult(status="success", count=len(generated_blogs), blogs=generated_blogs)
 
 
@@ -279,14 +286,18 @@ def publish_blog(
     try:
         result = publish_blog_to_platform(blog, credential)
     except RuntimeError as err:
+        is_new_error = blog.post_error != str(err)
         blog.post_error = str(err)
         db.commit()
+        if is_new_error:
+            notify(db, company.id, "failed", f"Couldn't publish blog to {blog.platform}: {blog.title} - {err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
 
     blog.is_posted = True
     blog.posted_at = datetime.now(timezone.utc)
     blog.post_error = None
     db.commit()
+    notify(db, company.id, "published", f"Published blog to {blog.platform}: {blog.title}")
 
     return PublishBlogResponse(
         status="success",
