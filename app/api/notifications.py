@@ -18,7 +18,8 @@ from app.services.notification_service import (
     NotificationError,
     send_to_channel,
     validate_webhook_url,
-    validate_whatsapp_link,
+    validate_whatsapp_number,
+    whatsapp_is_configured,
 )
 
 router = APIRouter()
@@ -43,13 +44,18 @@ def _is_connected(channel: NotificationChannel) -> bool:
     return bool(channel.webhook_url)
 
 
+def _can_send(provider: str) -> bool:
+    """WhatsApp needs a sender configured on the server; the others only need a webhook."""
+    return whatsapp_is_configured() if provider == "whatsapp" else True
+
+
 def _to_response(provider: str, channel: Optional[NotificationChannel]) -> NotificationChannelResponse:
     if channel is None:
         return NotificationChannelResponse(
             provider=provider,
             is_connected=False,
             webhook_configured=False,
-            can_send=provider != "whatsapp",
+            can_send=_can_send(provider),
             triggers=NotificationTriggers(ready_for_approval=False, published=False, failed=False),
         )
     return NotificationChannelResponse(
@@ -57,7 +63,7 @@ def _to_response(provider: str, channel: Optional[NotificationChannel]) -> Notif
         is_connected=_is_connected(channel),
         target=channel.target,
         webhook_configured=bool(channel.webhook_url),
-        can_send=provider != "whatsapp",
+        can_send=_can_send(provider),
         triggers=NotificationTriggers(
             ready_for_approval=channel.notify_ready_for_approval,
             published=channel.notify_published,
@@ -115,11 +121,11 @@ def save_channel(
 
     try:
         if name == "whatsapp" and payload.target is not None:
-            payload.target = validate_whatsapp_link(payload.target)
+            payload.target = validate_whatsapp_number(payload.target)
         webhook = None
         if payload.webhook_url is not None:
             if name == "whatsapp":
-                raise NotificationError("WhatsApp connects with a group invite link in target, not a webhook.")
+                raise NotificationError("WhatsApp connects with a phone number in target, not a webhook.")
             webhook = validate_webhook_url(name, payload.webhook_url)
     except NotificationError as err:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
