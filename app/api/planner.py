@@ -15,6 +15,7 @@ from app.schemas.planner import (
     PlannerQueueResponse,
 )
 from app.services.planner_service import generate_content_plan
+from app.services.brand_service import get_brand_profile
 from app.services.notification_service import notify, titles_summary
 
 router = APIRouter()
@@ -93,14 +94,16 @@ def generate_plan(
     requested = payload.count or period_days
     count = max(1, min(requested, MAX_PLAN_ITEMS))
 
+    # Anything the request leaves out comes from the brand profile set in Themes.
+    brand = get_brand_profile(db, company.id)
     plan = generate_content_plan(
         count=count,
         platforms=target_platforms,
         language=payload.language,
         topic=payload.topic,
-        company_description=payload.company_description,
-        brand_tone=payload.brand_tone,
-        target_audience=payload.target_audience,
+        company_description=payload.company_description or (brand.company_description if brand else None),
+        brand_tone=payload.brand_tone or (brand.brand_tone if brand else None),
+        target_audience=payload.target_audience or (brand.target_audience if brand else None),
     )
 
     approved = payload.mode == "auto_schedule"
@@ -120,7 +123,7 @@ def generate_plan(
             hashtags=entry["hashtags"],
             date=slot_date.isoformat(),
             start_time=payload.post_time,
-            tone=payload.brand_tone or "Professional",
+            tone=payload.brand_tone or (brand.brand_tone if brand else None) or "Professional",
             language=payload.language,
             ai_safety_score=entry["ai_safety_score"],
             is_approved=approved,

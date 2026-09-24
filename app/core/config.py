@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     FACEBOOK_CLIENT_ID: str = config("FACEBOOK_CLIENT_ID", default="")
     FACEBOOK_CLIENT_SECRET: str = config("FACEBOOK_CLIENT_SECRET", default="")
 
+    # WhatsApp Cloud API sender used for team alerts (one sender for the whole app).
+    WHATSAPP_PHONE_NUMBER_ID: str = config("WHATSAPP_PHONE_NUMBER_ID", default="")
+    WHATSAPP_ACCESS_TOKEN: str = config("WHATSAPP_ACCESS_TOKEN", default="")
+    WHATSAPP_API_VERSION: str = config("WHATSAPP_API_VERSION", default="v21.0")
+
     # X app credentials used by the one-click X connection flow.
     X_REDIRECT_URI: str = config("X_REDIRECT_URI", default="")
     X_CLIENT_ID: str = config("X_CLIENT_ID", default="")

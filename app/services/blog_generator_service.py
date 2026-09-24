@@ -11,6 +11,7 @@ from app.core.encryption import decrypt, encrypt
 from app.services.image_embed_service import get_genai_client
 from app.services.post_generator_service import find_relevant_library_image, generate_post_image
 from app.services.storage_service import upload_library_asset
+from app.services.brand_service import brand_prompt_context, brand_style_guide, get_brand_profile
 from app.services.wordpress_service import WordPressService
 from app.services.blogger_service import BloggerService
 from app.services.wix_service import WixService
@@ -56,11 +57,13 @@ def generate_blog_content(
     language: str | None = "English (US)",
     reference_url: str | None = None,
     extra_hashtags: list[str] | None = None,
+    brand_context: str = "",
 ) -> dict:
     """Generate a long-form blog title + HTML body + tags tailored to the topic."""
     tone_str = tone or "Professional"
     lang_str = language or "English (US)"
 
+    brand_block = f"\n{brand_context}\n" if brand_context else ""
     reference_context = ""
     if reference_url:
         excerpt = _fetch_reference_url_text(reference_url)
@@ -72,7 +75,7 @@ You are an expert long-form content writer producing a blog article for a busine
 
 TOPIC / REQUEST:
 {prompt}
-{reference_context}
+{brand_block}{reference_context}
 TONE: {tone_str}
 LANGUAGE: {lang_str}
 
@@ -132,7 +135,7 @@ def create_generated_blog(
     platform: str,
     date: str | None = None,
     start_time: str | None = None,
-    tone: str | None = "Professional",
+    tone: str | None = None,
     language: str | None = "English (US)",
     hashtags: list[str] | None = None,
     reference_url: str | None = None,
@@ -146,6 +149,9 @@ def create_generated_blog(
     4. Upload the generated image (if any) to Supabase storage.
     5. Save the draft as a GeneratedBlog row scoped to the company.
     """
+    brand = get_brand_profile(db, company_id)
+    tone = tone or (brand.brand_tone if brand else None) or "Professional"
+
     reference_id = None
     reference_image_url = None
     images_data: list[dict] = []
@@ -173,10 +179,11 @@ def create_generated_blog(
         language=language,
         reference_url=reference_url,
         extra_hashtags=hashtags,
+        brand_context=brand_prompt_context(brand),
     )
 
     image_url = None
-    generated_bytes = generate_post_image(images_data, prompt, platform)
+    generated_bytes = generate_post_image(images_data, prompt, platform, brand_style_guide(brand))
     if generated_bytes:
         try:
             image_url = upload_library_asset(

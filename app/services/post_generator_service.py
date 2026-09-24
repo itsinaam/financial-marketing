@@ -10,6 +10,7 @@ from app.models.post import GeneratedPost
 from app.services.image_embed_service import get_genai_client
 from app.services.text_embed_service import generate_text_embedding, cosine_similarity
 from app.services.storage_service import upload_library_asset
+from app.services.brand_service import brand_prompt_context, brand_style_guide, get_brand_profile
 from app.services.linkedin_service import LinkedInService
 from app.services.instagram_service import InstagramService
 from app.services.facebook_service import FacebookService
@@ -72,6 +73,7 @@ def generate_caption_and_hashtags(
     tone: str | None = "Professional",
     language: str | None = "English (US)",
     extra_hashtags: list[str] | None = None,
+    brand_context: str = "",
 ) -> dict:
     """Generate a headline, caption, hashtags, and safety score tailored to the target platform."""
     tone_str = tone or "Professional"
@@ -103,12 +105,13 @@ def generate_caption_and_hashtags(
             "Write a 1-2 paragraph B2B-appropriate caption, then 5-8 relevant corporate hashtags."
         )
 
+    brand_block = f"\n{brand_context}\n" if brand_context else ""
     prompt_text = f"""
 You are an expert social media content strategist writing on behalf of a business.
 
 USER REQUEST / TOPIC:
 {prompt}
-
+{brand_block}
 TONE: {tone_str}
 LANGUAGE: {lang_str}
 
@@ -159,7 +162,12 @@ Return ONLY a JSON object (no markdown fences) with keys:
         return default_result
 
 
-def generate_post_image(reference_images: list[dict], user_prompt: str, platform: str) -> bytes | None:
+def generate_post_image(
+    reference_images: list[dict],
+    user_prompt: str,
+    platform: str,
+    style_guide_override: str | None = None,
+) -> bytes | None:
     """
     Generate a new social post image from reference image bytes + the user prompt
     via Gemini's multimodal image model. Returns None if generation fails.
@@ -172,6 +180,8 @@ def generate_post_image(reference_images: list[dict], user_prompt: str, platform
         style_guide = "Vibrant, modern lifestyle Instagram-style composition."
     else:
         style_guide = "Clean, high-impact, professional composition suitable for business social media."
+    if style_guide_override:
+        style_guide = style_guide_override
 
     combined_prompt = f"""
 {DEFAULT_IMAGE_SYSTEM_PROMPT}
@@ -214,7 +224,7 @@ def create_generated_post(
     platform: str,
     date: str | None = None,
     start_time: str | None = None,
-    tone: str | None = "Professional",
+    tone: str | None = None,
     language: str | None = "English (US)",
     hashtags: list[str] | None = None,
     custom_images_data: list[dict] | None = None,
@@ -229,6 +239,10 @@ def create_generated_post(
     4. Upload the generated image (if any) to Supabase storage.
     5. Save the draft as a GeneratedPost row scoped to the company.
     """
+    brand = get_brand_profile(db, company_id)
+    # The Themes screen sets the house tone; an explicit tone on the request still wins.
+    tone = tone or (brand.brand_tone if brand else None) or "Professional"
+
     reference_id = None
     reference_url = None
     images_data: list[dict] = []
@@ -257,10 +271,11 @@ def create_generated_post(
         tone=tone,
         language=language,
         extra_hashtags=hashtags,
+        brand_context=brand_prompt_context(brand),
     )
 
     image_url = None
-    generated_bytes = generate_post_image(images_data, prompt, platform)
+    generated_bytes = generate_post_image(images_data, prompt, platform, brand_style_guide(brand))
     if generated_bytes:
         try:
             image_url = upload_library_asset(
