@@ -14,6 +14,8 @@ class Payment(Base):
     currency = Column(String(10), default="usd", nullable=False)
     status = Column(String(50), default="pending", nullable=False)
     description = Column(String(500), nullable=True)
+    plan_code = Column(String(30), nullable=True)
+    billing_period = Column(String(10), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
