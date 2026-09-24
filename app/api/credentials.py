@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from app.core import deps
 from app.core.config import settings
+from app.core.encryption import encrypt, decrypt
 from app.models.companies import Company, Role
 from app.models.credentials import Credentials
 from app.schemas.credentials import (
@@ -22,12 +23,19 @@ from app.services.linkedin_service import LinkedInService, DEFAULT_MEMBER_SCOPES
 from app.services.instagram_service import InstagramService
 from app.services.facebook_service import FacebookService
 from app.services.twitter_service import TwitterService
+from app.services.wordpress_service import WordPressService
+from app.services.blogger_service import BloggerService
+from app.services.wix_service import WixService
 from app.services.storage_service import upload_library_asset
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
 
 CORE_PLATFORMS = ["linkedin", "instagram", "facebook", "x"]
+
+# Platforms whose credentials (client_secret/access_token/refresh_token) are
+# encrypted at rest via app/core/encryption.py. Other platforms keep plaintext.
+ENCRYPT_PLATFORMS = {"wordpress", "blogger", "wix"}
 
 
 def get_request_base_url(request: Request) -> str:
@@ -356,6 +364,111 @@ def connect_facebook(
     )
 
 
+@router.get(
+    "/blogger/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the Google OAuth URL to connect Blogger for the current company",
+)
+def connect_blogger(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """Prepare Blogger OAuth without asking the user for Google credentials."""
+    company = resolve_company(db, auth, company_id)
+    redirect_uri = settings.GOOGLE_REDIRECT_URI or (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/blogger/callback"
+    )
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform == "blogger",
+        )
+        .first()
+    )
+    client_id = (
+        credential.client_id if credential else settings.GOOGLE_CLIENT_ID
+    )
+    client_secret = (
+        decrypt(credential.client_secret)
+        if credential and credential.client_secret
+        else settings.GOOGLE_CLIENT_SECRET
+    )
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Blogger OAuth is not configured. Set GOOGLE_CLIENT_ID and "
+                "GOOGLE_CLIENT_SECRET in the server environment."
+            ),
+        )
+
+    if credential:
+        credential.client_id = client_id
+        credential.client_secret = (
+            encrypt(client_secret)
+            if credential.client_secret
+            else client_secret
+        )
+    else:
+        credential = Credentials(
+            company_id=company.id,
+            platform="blogger",
+            client_id=client_id,
+            client_secret=encrypt(client_secret),
+        )
+        db.add(credential)
+    db.commit()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="blogger",
+        authorization_url=BloggerService.get_authorization_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=str(company.id),
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in the browser to log in with Google and grant Blogger access.",
+    )
+
+
+@router.get(
+    "/wix/connect",
+    response_model=OAuthConnectResponse,
+    summary="Get Wix connect instructions (API-key flow)",
+)
+def connect_wix(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """Wix connects via the API-key flow (no OAuth) — use the credentials modal to enter your WIX SITE ID + API KEY."""
+    company = resolve_company(db, auth, company_id)
+    db.query(Credentials).filter(Credentials.company_id == company.id, Credentials.platform == "wix").first()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="wix",
+        authorization_url="",
+        redirect_uri="",
+        message=(
+            "Wix uses the API-key flow. Open the Wix integration configuration modal and enter "
+            "your SITE ID (organization_id) and API KEY (client_secret). No browser OAuth install needed."
+        ),
+    )
+
+
 @router.post("", response_model=CredentialsResponse, summary="Save platform credentials (Client ID, Secret, Platform) into Database")
 def save_credentials(
     payload: SaveCredentialsRequest,
@@ -450,6 +563,11 @@ def save_credentials(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="organization_id (the site's base URL, e.g. https://yoursite.com) is required for WordPress.",
             )
+        WordPressService.test_connection(
+            site_url=payload.organization_id,
+            username=payload.client_id,
+            app_password=payload.client_secret,
+        )
         access_token = payload.client_secret
         response_msg = (
             "WordPress site connected! client_id is your WP username and client_secret is an Application "
@@ -470,6 +588,40 @@ def save_credentials(
             "platform='ghost'."
         )
 
+    elif platform_name == "blogger":
+        # Blogger uses full Google OAuth; saving the app credentials starts the
+        # flow. The callback handles token exchange + blog selection.
+        effective_redirect_uri = settings.GOOGLE_REDIRECT_URI or (
+            f"{base_url}{settings.API_V1_STR}/credentials/blogger/callback"
+        )
+        auth_url = BloggerService.get_authorization_url(
+            client_id=payload.client_id,
+            redirect_uri=effective_redirect_uri,
+            state=str(company.id),
+        )
+        response_msg = (
+            f"Blogger credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
+            f"Authorized redirect URIs in your Google Cloud OAuth Client, then open authorization_url in browser to connect your blog."
+        )
+
+    elif platform_name == "wix":
+        if not payload.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "organization_id (the Wix SITE ID, found under Settings (arrow) Site History) "
+                "is required for Wix."
+            ),
+            )
+        WixService.test_connection(
+            api_key=payload.client_secret,
+            site_id=payload.organization_id,
+        )
+        response_msg = (
+            "Wix site connected! client_secret is your Wix Site API Key and organization_id is your "
+            "SITE ID. You can now publish blogs via platform='wix'."
+        )
+
     # Check if record already exists for this company and platform
     credential = (
         db.query(Credentials)
@@ -480,11 +632,16 @@ def save_credentials(
         .first()
     )
 
+    encrypt_fields = platform_name in ENCRYPT_PLATFORMS
+
+    def _maybe_encrypt(value: Optional[str]) -> Optional[str]:
+        return encrypt(value) if (encrypt_fields and value) else value
+
     if credential:
         credential.client_id = payload.client_id
-        credential.client_secret = payload.client_secret
+        credential.client_secret = _maybe_encrypt(payload.client_secret)
         if access_token:
-            credential.access_token = access_token
+            credential.access_token = _maybe_encrypt(access_token)
         if payload.organization_id:
             credential.organization_id = payload.organization_id
     else:
@@ -492,8 +649,8 @@ def save_credentials(
             company_id=company.id,
             platform=platform_name,
             client_id=payload.client_id,
-            client_secret=payload.client_secret,
-            access_token=access_token,
+            client_secret=_maybe_encrypt(payload.client_secret),
+            access_token=_maybe_encrypt(access_token),
             organization_id=payload.organization_id,
         )
         db.add(credential)
@@ -1167,3 +1324,174 @@ def x_callback(
         url="https://financial-markett.vercel.app/integrations?x=not_configured",
         status_code=302,
     )
+
+
+@router.get("/blogger/callback", summary="Blogger Callback endpoint that exchanges the Google code and saves tokens + selected blog in DB")
+def blogger_callback(
+    request: Request,
+    code: Optional[str] = Query(None, description="Authorization code from Google"),
+    error: Optional[str] = Query(None, description="Error code if user denied authorization"),
+    state: Optional[str] = Query(None, description="State containing company_id"),
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    if error:
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?blogger=error",
+            status_code=302,
+        )
+    if not code:
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?blogger=missing_code",
+            status_code=302,
+        )
+
+    current_redirect_uri = settings.GOOGLE_REDIRECT_URI or get_current_callback_url(request)
+
+    target_company_id = None
+    if state:
+        try:
+            target_company_id = int(state)
+        except ValueError:
+            pass
+
+    credential = None
+    if target_company_id:
+        credential = (
+            db.query(Credentials)
+            .filter(
+                Credentials.company_id == target_company_id,
+                Credentials.platform == "blogger",
+            )
+            .first()
+        )
+
+    if credential:
+        try:
+            token_data = BloggerService.exchange_authorization_code(
+                client_id=credential.client_id,
+                client_secret=decrypt(credential.client_secret),
+                code=code,
+                redirect_uri=current_redirect_uri,
+            )
+            access_token = token_data.get("access_token")
+            if access_token:
+                credential.access_token = encrypt(access_token)
+                if token_data.get("refresh_token"):
+                    credential.refresh_token = encrypt(token_data["refresh_token"])
+                credential.token_expires_at = token_data.get("expires_at")
+
+                # Pick the first blog the user owns as the publish target.
+                blogs = BloggerService.list_blogs(access_token)
+                if not blogs:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Your Google account has no Blogger blog to publish to. Create one at blogger.com first.",
+                    )
+                credential.organization_id = blogs[0]["id"]
+                db.commit()
+                db.refresh(credential)
+
+                return RedirectResponse(
+                    url="https://financial-markett.vercel.app/integrations?blogger=success",
+                    status_code=302,
+                )
+        except HTTPException as exc:
+            return RedirectResponse(
+                url=f"https://financial-markett.vercel.app/integrations?blogger=error&detail={exc.detail}",
+                status_code=302,
+            )
+        except Exception as ex:
+            return {
+                "status": "partial_success",
+                "warning": f"Received authorization code, but automated token exchange failed: {str(ex)}",
+                "company_id": target_company_id,
+                "platform": "blogger",
+            }
+
+    return {
+        "status": "success",
+        "code": code,
+        "state": state,
+        "message": "Authorization code received successfully, but no matching Blogger credential found in database.",
+    }
+
+
+@router.get("/wix/callback", summary="Wix Callback endpoint that saves the app instance id + site id in DB")
+def wix_callback(
+    request: Request,
+    app_id: Optional[str] = Query(None, alias="appId", description="Wix app id from the install callback"),
+    tenant_id: Optional[str] = Query(None, alias="tenantId", description="Wix site id the app was installed on"),
+    instance_id: Optional[str] = Query(None, alias="instanceId", description="Wix app instance id for this site"),
+    signed_instance: Optional[str] = Query(None, alias="signedInstance", description="Signed copy of the app instance data"),
+    state: Optional[str] = Query(None, description="State containing company_id"),
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    if not tenant_id or not instance_id:
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?wix=missing_install",
+            status_code=302,
+        )
+
+    target_company_id = None
+    if state:
+        try:
+            target_company_id = int(state)
+        except ValueError:
+            pass
+
+    credential = None
+    if target_company_id:
+        credential = (
+            db.query(Credentials)
+            .filter(
+                Credentials.company_id == target_company_id,
+                Credentials.platform == "wix",
+            )
+            .first()
+        )
+
+    if not credential:
+        return {
+            "status": "success",
+            "message": "Wix install callback received, but no matching Wix credential found in database.",
+            "company_id": target_company_id,
+            "platform": "wix",
+        }
+
+    try:
+        # Verify the install callback (per Wix docs: never trust raw instanceId).
+        payload = WixService.verify_signed_instance(
+            signed_instance=signed_instance or "",
+            app_secret=decrypt(credential.client_secret),
+        )
+        payload_instance_id = payload.get("instanceId") or payload.get("instance_id")
+        if payload_instance_id and payload_instance_id != instance_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Wix install callback instanceId mismatch.",
+            )
+
+        credential.client_id = app_id or credential.client_id
+        # The encrypted access_token slot stores the app instance id; a fresh
+        # client_credentials token is minted on every publish.
+        credential.access_token = encrypt(instance_id)
+        credential.organization_id = tenant_id
+        db.commit()
+        db.refresh(credential)
+
+        return RedirectResponse(
+            url="https://financial-markett.vercel.app/integrations?wix=success",
+            status_code=302,
+        )
+    except HTTPException as exc:
+        return RedirectResponse(
+            url=f"https://financial-markett.vercel.app/integrations?wix=error&detail={exc.detail}",
+            status_code=302,
+        )
+    except Exception as ex:
+        return {
+            "status": "partial_success",
+            "warning": f"Received install callback, but verification failed: {str(ex)}",
+            "company_id": target_company_id,
+            "platform": "wix",
+        }

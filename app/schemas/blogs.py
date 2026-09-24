@@ -24,6 +24,7 @@ class GeneratedBlogResponse(BaseModel):
     is_posted: bool
     posted_at: Optional[datetime] = None
     post_error: Optional[str] = None
+    published_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

@@ -1,21 +1,40 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 import requests
 from sqlalchemy.orm import Session
 
 from app.models.blog import GeneratedBlog
 from app.models.credentials import Credentials
+from app.core.encryption import decrypt, encrypt
 from app.services.image_embed_service import get_genai_client
 from app.services.post_generator_service import find_relevant_library_image, generate_post_image
 from app.services.storage_service import upload_library_asset
 from app.services.wordpress_service import WordPressService
+from app.services.blogger_service import BloggerService
+from app.services.wix_service import WixService
 from app.services.ghost_service import GhostService
 
 logger = logging.getLogger("BlogGeneratorService")
 
 TEXT_MODEL = "gemini-3.6-flash"
 _TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _parse_hashtags(value: str | None) -> list[str]:
+    """Split a stored hashtags string (space/comma separated) into a clean tag list."""
+    if not value:
+        return []
+    tags = []
+    for raw in value.replace(",", " ").split():
+        tag = raw.strip()
+        if not tag:
+            continue
+        tag = tag.lstrip("#")
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags
 
 
 def _fetch_reference_url_text(url: str, max_chars: int = 4000) -> str | None:
@@ -193,7 +212,53 @@ def create_generated_blog(
     return blog
 
 
-def publish_blog_to_platform(blog: GeneratedBlog, credential: Credentials | None) -> dict:
+def _ensure_blogger_token(db, credential) -> tuple[str, bool]:
+    """
+    Return a usable (decrypted) Blogger access token, refreshing it if it is
+    expired (or close to expiry). Returns (token, changed) where `changed`
+    tells the caller whether the credential row was already committed.
+    """
+    token = decrypt(credential.access_token)
+    refresh_token = decrypt(credential.refresh_token) if credential.refresh_token else None
+    if not refresh_token:
+        return token, False
+
+    now = datetime.now(timezone.utc)
+    refreshed = credential.token_expires_at is None or credential.token_expires_at <= now
+    if not refreshed:
+        return token, False
+
+    new_tokens = BloggerService.refresh_access_token(
+        client_id=credential.client_id,
+        client_secret=decrypt(credential.client_secret),
+        refresh_token=refresh_token,
+    )
+    credential.access_token = encrypt(new_tokens["access_token"])
+    if new_tokens.get("refresh_token"):
+        credential.refresh_token = encrypt(new_tokens["refresh_token"])
+    if new_tokens.get("expires_at"):
+        credential.token_expires_at = new_tokens["expires_at"]
+    if db is not None:
+        db.commit()
+    return new_tokens["access_token"], True
+
+
+def _ensure_wix_token(db, credential) -> tuple[str, bool]:
+    """
+    Wix uses app-instance OAuth: we persist the instance id (encrypted in the
+    access_token slot) and mint a fresh 4h client_credentials token on every
+    publish. Nothing is written back to the DB.
+    """
+    instance_id = decrypt(credential.access_token)
+    token = WixService.get_access_token(
+        app_id=credential.client_id,
+        app_secret=decrypt(credential.client_secret),
+        instance_id=instance_id,
+    )
+    return token, False
+
+
+def publish_blog_to_platform(blog: GeneratedBlog, credential: Credentials | None, db: Session | None = None) -> dict:
     """
     Publish an already-generated blog draft to its target platform. Raises
     RuntimeError with a user-facing message on any failure (missing auth,
@@ -209,13 +274,51 @@ def publish_blog_to_platform(blog: GeneratedBlog, credential: Credentials | None
     if plat == "wordpress":
         if not credential or not credential.access_token or not credential.organization_id:
             raise RuntimeError("WordPress site not connected. Save the site URL, username, and Application Password via POST /api/credentials/ first.")
-        return WordPressService.create_post(
+        result = WordPressService.create_post(
             site_url=credential.organization_id,
             username=credential.client_id,
-            app_password=credential.access_token,
+            app_password=decrypt(credential.access_token),
             title=blog.title or "Untitled",
             content=blog.content,
+            tags=_parse_hashtags(blog.hashtags),
         )
+        if result.get("link"):
+            blog.published_url = result["link"]
+        return result
+
+    if plat == "blogger":
+        if not credential or not credential.access_token:
+            raise RuntimeError("Blogger not connected. Connect a Google account via the Blogger integration first.")
+        if not credential.organization_id:
+            raise RuntimeError("Blogger is connected but no blog was selected. Reconnect via the Blogger integration first.")
+        token, _ = _ensure_blogger_token(db, credential)
+        result = BloggerService.create_post(
+            access_token=token,
+            blog_id=credential.organization_id,
+            title=blog.title or "Untitled",
+            content=blog.content,
+            labels=_parse_hashtags(blog.hashtags),
+        )
+        if result.get("link"):
+            blog.published_url = result["link"]
+        return result
+
+    if plat == "wix":
+        if not credential or not credential.client_secret or not credential.organization_id:
+            raise RuntimeError("Wix site not connected. Connect your Wix site (SITE ID + API Key) via the Wix integration first.")
+        api_key = decrypt(credential.client_secret)
+        site_id = credential.organization_id
+        member_id = WixService.get_member_id(api_key=api_key, site_id=site_id)
+        result = WixService.create_post(
+            api_key=api_key,
+            site_id=site_id,
+            member_id=member_id,
+            title=blog.title or "Untitled",
+            html_content=blog.content,
+        )
+        if result.get("link"):
+            blog.published_url = result["link"]
+        return result
 
     if plat == "ghost":
         if not credential or not credential.access_token or not credential.organization_id:
@@ -226,9 +329,6 @@ def publish_blog_to_platform(blog: GeneratedBlog, credential: Credentials | None
             title=blog.title or "Untitled",
             html_content=blog.content,
         )
-
-    if plat == "blogger":
-        raise RuntimeError("Blogger publishing isn't set up yet (requires a Google Cloud OAuth app registration).")
 
     if plat == "medium":
         raise RuntimeError("Medium discontinued its public publishing API in 2023; direct publishing isn't possible.")

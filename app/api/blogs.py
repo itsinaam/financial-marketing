@@ -23,7 +23,7 @@ from app.services.notification_service import notify, titles_summary
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
 
-SUPPORTED_PLATFORMS = {"website", "medium", "wordpress", "blogger", "substack", "ghost"}
+SUPPORTED_PLATFORMS = {"website", "medium", "wordpress", "blogger", "substack", "ghost", "wix"}
 
 
 def _parse_platforms(platforms: str) -> List[str]:
@@ -284,7 +284,7 @@ def publish_blog(
     )
 
     try:
-        result = publish_blog_to_platform(blog, credential)
+        result = publish_blog_to_platform(blog, credential, db)
     except RuntimeError as err:
         is_new_error = blog.post_error != str(err)
         blog.post_error = str(err)

@@ -18,6 +18,7 @@ class CalendarItem(BaseModel):
     is_posted: bool
     posted_at: Optional[datetime] = None
     post_error: Optional[str] = None
+    published_url: Optional[str] = None
     language: Optional[str] = None
     ai_safety_score: Optional[int] = None
 
