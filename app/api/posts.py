@@ -100,7 +100,7 @@ def _parse_hashtags(hashtags: Optional[str]) -> List[str]:
 async def generate_posts(
     prompt: str = Form(..., description="Describe the post in detail", max_length=2000),
     platforms: str = Form(..., description="Comma-separated target platforms (linkedin, instagram, facebook, x)"),
-    tone: str = Form("Professional", description="Writing tone, e.g. Professional, Casual"),
+    tone: Optional[str] = Form(None, description="Writing tone. Falls back to the brand tone from Themes."),
     language: str = Form("English (US)", description="Output language"),
     hashtags: Optional[str] = Form(None, description="Optional comma/space-separated hashtags to include"),
     date: Optional[str] = Form(None, description="Scheduled date (YYYY-MM-DD)"),
