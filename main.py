@@ -8,7 +8,8 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
-from app.models import companies, credentials, library, payment, post, blog, notification, brand  # noqa: F401 - register models on Base
+from app.core.plans import seed_plans
+from app.models import companies, credentials, library, payment, post, blog, notification, brand, plan  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
 
@@ -70,6 +71,7 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         try:
             init_db(db)
+            seed_plans(db)
         finally:
             db.close()
     except Exception as exc:

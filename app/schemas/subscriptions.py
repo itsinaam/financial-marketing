@@ -51,3 +51,19 @@ class StartCheckoutResponse(BaseModel):
     plan_code: str
     billing_period: BillingPeriodLiteral
     amount: float
+
+
+class UpdatePlanRequest(BaseModel):
+    monthly_price: Optional[float] = Field(None, ge=0, description="The 'Monthly price ($)' field")
+    yearly_price: Optional[float] = Field(None, ge=0, description="The 'Yearly price ($)' field")
+    description: Optional[str] = Field(None, max_length=500)
+    features: Optional[List[str]] = Field(None, min_length=1, description="At least one feature")
+    badge: Optional[str] = Field(None, max_length=30)
+    posts_per_month: Optional[int] = Field(None, ge=0, description="null means unlimited")
+    businesses: Optional[int] = Field(None, ge=0, description="null means no limit")
+    is_active: Optional[bool] = None
+
+
+class AdminPlanResponse(PlanResponse):
+    id: int
+    is_active: bool

@@ -99,3 +99,30 @@ def plan_label(plan_code: str, billing_period: str) -> str:
     """What the customer sees on the Stripe page and on their payment record."""
     period = "Yearly" if billing_period == "yearly" else "Monthly"
     return f"{PLANS_BY_CODE[plan_code]['name']} Plan ({period})"
+
+
+def seed_plans(db) -> int:
+    """Put the pricing table into the database the first time, so it can be edited."""
+    from app.models.plan import SubscriptionPlan
+
+    if db.query(SubscriptionPlan).count() > 0:
+        return 0
+
+    for order, plan in enumerate(PLANS):
+        db.add(
+            SubscriptionPlan(
+                code=plan["code"],
+                name=plan["name"],
+                description=plan["tagline"],
+                monthly_price=float(plan["monthly_price"]),
+                yearly_price=float(yearly_price(plan["monthly_price"])),
+                features=list(plan["features"]),
+                badge=plan["badge"],
+                posts_per_month=plan["posts_per_month"],
+                businesses=plan["businesses"],
+                is_active=True,
+                sort_order=order,
+            )
+        )
+    db.commit()
+    return len(PLANS)
