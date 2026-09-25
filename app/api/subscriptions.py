@@ -114,11 +114,17 @@ def list_plans(
     db: Session = Depends(deps.get_db),
     auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ) -> Any:
-    company = resolve_company(db, auth, company_id)
-    current = _current_subscription(db, company.id)
+    # The pricing page is open to visitors who haven't signed up yet, so a missing
+    # login just means no plan is marked as the current one.
+    try:
+        company = resolve_company(db, auth, company_id)
+        current_code = _current_subscription(db, company.id).plan_code
+    except HTTPException:
+        current_code = ""
+
     return PlansResponse(
-        plans=[_to_plan_response(plan, current.plan_code) for plan in _all_plans(db)],
-        current_plan_code=current.plan_code,
+        plans=[_to_plan_response(plan, current_code) for plan in _all_plans(db)],
+        current_plan_code=current_code,
     )
 
 
