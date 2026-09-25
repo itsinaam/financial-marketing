@@ -8,14 +8,10 @@ from sqlalchemy.orm import Session
 from app.core import deps
 from app.api.credentials import resolve_company
 from app.models.blog import GeneratedBlog
-from app.models.companies import Company, Role
-from app.models.plan import SubscriptionPlan
 from app.models.library import Library
 from app.models.post import GeneratedPost
 from app.schemas.dashboard import (
     ActivityItem,
-    AdminCompanyRow,
-    SuperAdminDashboardResponse,
     ComingUpItem,
     DashboardResponse,
     DashboardStats,
@@ -236,77 +232,4 @@ def get_dashboard(
         top_post=top_post,
         recent_activity=activity[:ACTIVITY_LIMIT],
         coming_up=upcoming[:COMING_UP_LIMIT],
-    )
-
-
-@router.get(
-    "/super-admin",
-    response_model=SuperAdminDashboardResponse,
-    dependencies=[Depends(deps.get_current_superadmin)],
-    summary="Company, revenue and plan totals for the Super Admin dashboard",
-)
-def get_super_admin_dashboard(
-    recent_limit: int = Query(5, ge=1, le=50, description="How many rows for Recent Companies"),
-    db: Session = Depends(deps.get_db),
-) -> Any:
-    """
-    Revenue is what the plans in force are worth per month, so a yearly plan counts
-    as a twelfth of what was paid. Super admin accounts are left out of the totals.
-    """
-    now = datetime.now(timezone.utc)
-    week_ago = now - timedelta(days=7)
-
-    companies = (
-        db.query(Company)
-        .filter(Company.role != Role.SUPERADMIN)
-        .order_by(Company.created_at.desc())
-        .all()
-    )
-    plans_by_code = {plan.code: plan for plan in db.query(SubscriptionPlan).all()}
-
-    monthly_revenue = 0.0
-    paid = 0
-    rows: List[AdminCompanyRow] = []
-
-    for company in companies:
-        plan = company.plan
-        code = plan["plan_code"]
-        is_paid = code != "free"
-        if is_paid:
-            paid += 1
-            saved = plans_by_code.get(code)
-            amount = plan.get("amount") or 0.0
-            is_yearly = "yearly" in (plan.get("plan_name") or "").lower()
-            if saved:
-                monthly_revenue += saved.yearly_price / 12 if is_yearly else saved.monthly_price
-            else:
-                monthly_revenue += amount / 12 if is_yearly else amount
-
-        joined = _as_utc(company.created_at)
-        rows.append(
-            AdminCompanyRow(
-                id=company.id,
-                name=company.name,
-                email=company.email,
-                avatar_url=company.avatar_url,
-                plan_code=code,
-                plan_name=plan["plan_name"],
-                joined_at=joined,
-                is_active=company.is_active,
-                status="Active" if company.is_active else "Suspended",
-            )
-        )
-
-    active = sum(1 for c in companies if c.is_active)
-    new_this_week = sum(1 for c in companies if (_as_utc(c.created_at) or now) >= week_ago)
-
-    return SuperAdminDashboardResponse(
-        total_companies=len(companies),
-        new_companies_this_week=new_this_week,
-        monthly_revenue=round(monthly_revenue, 2),
-        paid_plans=paid,
-        free_plans=len(companies) - paid,
-        active_companies=active,
-        suspended_companies=len(companies) - active,
-        recent_companies=rows[:recent_limit],
     )

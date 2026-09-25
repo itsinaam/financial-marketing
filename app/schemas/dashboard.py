@@ -63,26 +63,3 @@ class DashboardResponse(BaseModel):
     top_post: Optional[TopPost] = None
     recent_activity: List[ActivityItem]
     coming_up: List[ComingUpItem]
-
-
-class AdminCompanyRow(BaseModel):
-    id: int
-    name: str
-    email: str
-    avatar_url: Optional[str] = None
-    plan_code: str
-    plan_name: str
-    joined_at: Optional[datetime] = None
-    is_active: bool
-    status: Literal["Active", "Suspended"]
-
-
-class SuperAdminDashboardResponse(BaseModel):
-    total_companies: int
-    new_companies_this_week: int
-    monthly_revenue: float = Field(..., description="Monthly value of every paid plan in force")
-    paid_plans: int
-    free_plans: int
-    active_companies: int
-    suspended_companies: int
-    recent_companies: List[AdminCompanyRow]
