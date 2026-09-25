@@ -5,7 +5,8 @@ from app.models.companies import Role
 from app.schemas.payment import PaymentResponse
 
 class PlanDetails(BaseModel):
-    id: int
+    id: int | None = None
+    plan_code: str
     plan_name: str
     product_name: str
     amount: float
@@ -60,7 +61,7 @@ class UserResponse(UserBase):
     is_superuser: bool
     created_at: datetime | None = None
     avatar_url: str | None = None
-    plan: PlanDetails | None = None
+    plan: PlanDetails
     payments: List[PaymentResponse] = []
 
     model_config = ConfigDict(from_attributes=True)

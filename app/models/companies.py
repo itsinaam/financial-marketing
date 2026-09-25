@@ -29,12 +29,24 @@ class Company(Base):
 
 
     @property
-    def plan(self) -> dict | None:
-        # Only a paid payment counts as an active plan. A checkout session that was
-        # opened but never paid stays "pending" and must not unlock the plan.
+    def plan(self) -> dict:
+        # Only a paid payment counts as a paid plan. A checkout session that was
+        # opened but never paid stays "pending"; everyone else is on Free.
         succeeded = [p for p in self.payments if p.status == "succeeded"]
         if not succeeded:
-            return None
+            return {
+                "id": None,
+                "plan_code": "free",
+                "plan_name": "Free",
+                "product_name": "Free",
+                "amount": 0.0,
+                "currency": "usd",
+                "status": "active",
+                "description": None,
+                "stripe_checkout_session_id": None,
+                "stripe_payment_intent_id": None,
+                "created_at": None,
+            }
 
         chosen = sorted(
             succeeded,
@@ -50,6 +62,7 @@ class Company(Base):
 
         return {
             "id": chosen.id,
+            "plan_code": chosen.plan_code or plan_name.split(" Plan")[0].strip().lower().replace(" ", "_"),
             "plan_name": plan_name,
             "product_name": plan_name,
             "amount": chosen.amount,
