@@ -1,9 +1,11 @@
 import logging
+import re
 from urllib.parse import urlparse
 
 import requests
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.notification import NotificationChannel
 
 logger = logging.getLogger("NotificationService")
@@ -23,10 +25,11 @@ _TEAMS_HOST_SUFFIXES = (
     ".powerautomate.com",
 )
 
-WHATSAPP_UNSUPPORTED = (
-    "WhatsApp groups can't be messaged through their invite link: the official WhatsApp "
-    "API only sends to individual phone numbers. The settings are saved, but no alerts "
-    "are delivered to WhatsApp yet."
+_PHONE_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
+
+WHATSAPP_NOT_CONFIGURED = (
+    "WhatsApp sending isn't set up on the server yet. Add WHATSAPP_PHONE_NUMBER_ID and "
+    "WHATSAPP_ACCESS_TOKEN to the environment."
 )
 
 
@@ -51,12 +54,61 @@ def validate_webhook_url(provider: str, url: str) -> str:
     return cleaned
 
 
-def validate_whatsapp_link(link: str) -> str:
-    cleaned = link.strip()
-    parsed = urlparse(cleaned)
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() != "chat.whatsapp.com" or len(parsed.path) <= 1:
-        raise NotificationError("The invite link should look like https://chat.whatsapp.com/XXXX.")
-    return cleaned
+def validate_whatsapp_number(number: str) -> str:
+    """WhatsApp is messaged per phone number, so the target is a number in international form."""
+    cleaned = re.sub(r"[\s()\-]", "", number.strip())
+    if not _PHONE_RE.match(cleaned):
+        raise NotificationError(
+            "Enter the WhatsApp number in international form, such as +923001234567."
+        )
+    return cleaned if cleaned.startswith("+") else f"+{cleaned}"
+
+
+def whatsapp_is_configured() -> bool:
+    return bool(settings.WHATSAPP_PHONE_NUMBER_ID and settings.WHATSAPP_ACCESS_TOKEN)
+
+
+def send_whatsapp(number: str, message: str) -> None:
+    """Send a plain text WhatsApp message through the Meta Cloud API."""
+    if not whatsapp_is_configured():
+        raise NotificationError(WHATSAPP_NOT_CONFIGURED)
+
+    endpoint = (
+        f"https://graph.facebook.com/{settings.WHATSAPP_API_VERSION}/"
+        f"{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
+    )
+    try:
+        res = requests.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"},
+            json={
+                "messaging_product": "whatsapp",
+                "to": number.lstrip("+"),
+                "type": "text",
+                "text": {"body": message},
+            },
+            timeout=SEND_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as err:
+        raise NotificationError(f"Couldn't reach WhatsApp: {err}") from err
+
+    if 200 <= res.status_code < 300:
+        return
+
+    detail = ""
+    try:
+        error = res.json().get("error", {})
+        detail = error.get("message", "")
+        # Outside the 24 hour window WhatsApp only allows approved templates.
+        if error.get("code") == 131047:
+            raise NotificationError(
+                "WhatsApp only allows a plain message within 24 hours of the recipient "
+                "messaging your business number. Ask them to send it a message first, or "
+                "use an approved template."
+            )
+    except ValueError:
+        detail = res.text[:200]
+    raise NotificationError(f"WhatsApp rejected the message ({res.status_code}): {detail}")
 
 
 def _payload(provider: str, message: str) -> dict:
@@ -82,7 +134,10 @@ def _payload(provider: str, message: str) -> dict:
 def send_to_channel(channel: NotificationChannel, message: str) -> None:
     """Deliver one message, raising NotificationError with a user-facing reason on failure."""
     if channel.provider == "whatsapp":
-        raise NotificationError(WHATSAPP_UNSUPPORTED)
+        if not channel.target:
+            raise NotificationError("No WhatsApp number saved yet.")
+        send_whatsapp(channel.target, message)
+        return
     if not channel.webhook_url:
         raise NotificationError(f"{channel.provider.title()} isn't connected yet.")
 
@@ -112,16 +167,13 @@ def notify(db: Session, company_id: int, event: str, message: str) -> None:
             "published": NotificationChannel.notify_published,
             "failed": NotificationChannel.notify_failed,
         }[event]
-        channels = (
-            db.query(NotificationChannel)
-            .filter(
-                NotificationChannel.company_id == company_id,
-                NotificationChannel.provider != "whatsapp",
-                NotificationChannel.webhook_url.is_not(None),
-                column == True,  # noqa: E712
-            )
+        channels = [
+            channel
+            for channel in db.query(NotificationChannel)
+            .filter(NotificationChannel.company_id == company_id, column == True)  # noqa: E712
             .all()
-        )
+            if (channel.target if channel.provider == "whatsapp" else channel.webhook_url)
+        ]
     except Exception as err:
         logger.warning("Could not load notification channels for company %s: %s", company_id, err)
         return

@@ -8,7 +8,8 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
-from app.models import companies, credentials, library, payment, post, blog, notification  # noqa: F401 - register models on Base
+from app.core.plans import seed_plans
+from app.models import companies, credentials, library, payment, post, blog, notification, brand, plan  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
 
@@ -61,12 +62,18 @@ async def lifespan(app: FastAPI):
             ))
             connection.execute(text(
                 "ALTER TABLE generated_blogs ADD COLUMN IF NOT EXISTS published_url VARCHAR(500)"
+
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_code VARCHAR(30)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE payments ADD COLUMN IF NOT EXISTS billing_period VARCHAR(10)"
             ))
 
         # 2. Seed default Super Admin user
         db = SessionLocal()
         try:
             init_db(db)
+            seed_plans(db)
         finally:
             db.close()
     except Exception as exc:

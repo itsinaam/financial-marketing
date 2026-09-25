@@ -68,7 +68,7 @@ def _parse_hashtags(hashtags: Optional[str]) -> List[str]:
 async def generate_blogs(
     prompt: str = Form(..., description="Describe the blog post in detail", max_length=2000),
     platforms: str = Form(..., description="Comma-separated target platforms (website, medium, wordpress, blogger, substack, ghost)"),
-    tone: str = Form("Professional", description="Writing tone, e.g. Professional, Casual"),
+    tone: Optional[str] = Form(None, description="Writing tone. Falls back to the brand tone from Themes."),
     language: str = Form("English (US)", description="Output language"),
     hashtags: Optional[str] = Form(None, description="Optional comma/space-separated tags to include"),
     reference_url: Optional[str] = Form(None, description="Optional URL for the AI to use as style/context reference"),

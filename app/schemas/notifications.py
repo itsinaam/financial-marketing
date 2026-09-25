@@ -14,9 +14,9 @@ class NotificationTriggers(BaseModel):
 class NotificationChannelResponse(BaseModel):
     provider: ProviderLiteral
     is_connected: bool
-    target: Optional[str] = Field(None, description="Channel name, or the WhatsApp group invite link")
+    target: Optional[str] = Field(None, description="Channel name, or the WhatsApp number that gets the alerts")
     webhook_configured: bool = Field(..., description="Whether a webhook is saved; the URL itself is never returned")
-    can_send: bool = Field(..., description="False for WhatsApp, which can't be messaged through an invite link")
+    can_send: bool = Field(..., description="False when WhatsApp sending is not configured on the server")
     triggers: NotificationTriggers
     last_error: Optional[str] = None
     updated_at: Optional[datetime] = None
@@ -30,7 +30,7 @@ class SaveChannelRequest(BaseModel):
     target: Optional[str] = Field(
         None,
         max_length=500,
-        description="Slack/Teams: the channel name to show. WhatsApp: the group invite link.",
+        description="Slack/Teams: the channel name to show. WhatsApp: the number in international form, e.g. +923001234567.",
     )
     webhook_url: Optional[str] = Field(
         None,
