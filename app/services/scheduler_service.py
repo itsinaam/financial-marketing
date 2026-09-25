@@ -160,7 +160,7 @@ def check_and_publish_due_blogs(db: Session) -> list[dict]:
         )
 
         try:
-            detail = publish_blog_to_platform(blog, credential)
+            detail = publish_blog_to_platform(blog, credential, db)
             blog.posted_at = now_utc
             blog.post_error = None
             db.commit()

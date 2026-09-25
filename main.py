@@ -61,6 +61,8 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE generated_blogs ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ"
             ))
             connection.execute(text(
+                "ALTER TABLE generated_blogs ADD COLUMN IF NOT EXISTS published_url VARCHAR(500)"
+
                 "ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_code VARCHAR(30)"
             ))
             connection.execute(text(

@@ -52,6 +52,7 @@ def _to_calendar_item(kind: str, record: Any, scheduled_at) -> CalendarItem:
         is_posted=record.is_posted,
         posted_at=record.posted_at,
         post_error=record.post_error,
+        published_url=getattr(record, "published_url", None),
         language=record.language,
         ai_safety_score=record.ai_safety_score,
     )

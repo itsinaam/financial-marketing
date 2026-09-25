@@ -38,6 +38,7 @@ class GeneratedBlog(Base):
     is_posted = Column(Boolean, default=False, nullable=False, server_default="false")
     posted_at = Column(DateTime(timezone=True), nullable=True)
     post_error = Column(Text, nullable=True)
+    published_url = Column(String(500), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
