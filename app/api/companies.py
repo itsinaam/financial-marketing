@@ -237,15 +237,19 @@ def read_company_by_id(
 @router.delete(
     "/{company_id}",
     response_model=UserDeleteResponse,
-    summary="Delete company by ID (Admin or Super Admin only)"
+    summary="Delete company by ID (Super Admin only)"
 )
 def delete_company(
     company_id: int,
     db: Session = Depends(deps.get_db),
-    current_user: Company = Depends(deps.get_current_user),
+    current_user: Company = Depends(deps.get_current_superadmin),
 ) -> Any:
     """
-    Delete a company by ID. Only accessible by Admin or Super Admin.
+    Delete a company by ID.
+
+    The summary always said this was for admins, but the route only asked for a
+    login, so any company could delete any other one. It now asks for a Super
+    Admin, which is the only role that exists above a company.
     """
     target_company = db.query(Company).filter(Company.id == company_id).first()
     if not target_company:
@@ -258,13 +262,6 @@ def delete_company(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You cannot delete your own account",
-        )
-
-    # Protect Super Admin from deletion by standard Admin
-    if (target_company.role == Role.SUPERADMIN or target_company.is_superuser) and (current_user.role != Role.SUPERADMIN and not current_user.is_superuser):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin cannot delete a Super Admin user",
         )
 
     db.delete(target_company)

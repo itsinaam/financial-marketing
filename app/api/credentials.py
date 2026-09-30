@@ -69,43 +69,60 @@ def get_current_callback_url(request: Request) -> str:
 
 def resolve_company(db: Session, auth: Optional[HTTPAuthorizationCredentials], company_id: Optional[int]) -> Company:
     """
-    Resolve company either from Bearer JWT token or from explicit company_id in the request.
-    """
-    if auth and auth.credentials:
-        try:
-            payload = jwt.decode(
-                auth.credentials, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
-            )
-            token_data = TokenPayload(**payload)
-            if token_data.sub:
-                user = db.query(Company).filter(Company.email == token_data.sub).first()
-                if user:
-                    # Allow Super Admin to query a specific company_id
-                    if company_id is not None and (user.role == Role.SUPERADMIN or user.is_superuser):
-                        target = db.query(Company).filter(Company.id == company_id).first()
-                        if target:
-                            return target
-                        raise HTTPException(
-                            status_code=status.HTTP_404_NOT_FOUND,
-                            detail=f"Company with id {company_id} not found",
-                        )
-                    return user
-        except (JWTError, ValidationError):
-            pass
+    The company a request is acting on.
 
-    if company_id is not None:
-        user = db.query(Company).filter(Company.id == company_id).first()
-        if user:
-            return user
+    A valid Bearer token is always required. `company_id` is only a scope
+    override for a Super Admin working on somebody else's data; for anyone else
+    the token decides, so the parameter can never widen what a caller reaches.
+
+    It used to fall back to trusting `company_id` on its own when the token was
+    missing or unreadable, which let anyone read and write any company's data by
+    guessing an id - every route that resolves its tenant through this helper was
+    open. OAuth callbacks are unaffected: they carry the company in the `state`
+    they signed the redirect with, not through here.
+    """
+    invalid_credentials = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if not auth or not auth.credentials:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Company with id {company_id} not found",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required: provide a Bearer token in the Authorization header.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Authentication required: Provide Bearer token in Authorization header or company_id in request.",
-    )
+    try:
+        payload = jwt.decode(
+            auth.credentials, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        token_data = TokenPayload(**payload)
+    except (JWTError, ValidationError):
+        raise invalid_credentials
+
+    # A password-reset token also carries an email in `sub`; it must not stand in
+    # for a login.
+    if payload.get("purpose") or not token_data.sub:
+        raise invalid_credentials
+
+    user = db.query(Company).filter(Company.email == token_data.sub).first()
+    if user is None:
+        raise invalid_credentials
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Inactive user")
+
+    if company_id is not None and (user.role == Role.SUPERADMIN or user.is_superuser):
+        target = db.query(Company).filter(Company.id == company_id).first()
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Company with id {company_id} not found",
+            )
+        return target
+
+    return user
 
 
 @router.get("", response_model=List[PlatformStatusResponse], include_in_schema=False)
