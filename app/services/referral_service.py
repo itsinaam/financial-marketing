@@ -6,6 +6,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.core.config import settings
 
+REFERRAL_REWARD_CREDITS = 100
+
 
 class ReferralServiceError(Exception):
     pass

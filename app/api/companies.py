@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -5,13 +6,16 @@ from sqlalchemy.orm import Session
 from app.core import deps
 from app.core import security
 from app.models.companies import Company,Role
+from app.models.referral import ReferralInvite
 from app.schemas.companies import UserCreate, UserResponse, UserDeleteResponse
 from app.schemas.referrals import (
     ReferralEmailRequest,
     ReferralEmailResponse,
     ReferralLinkResponse,
+    ReferralStatsResponse,
 )
 from app.services.referral_service import (
+    REFERRAL_REWARD_CREDITS,
     ReferralServiceError,
     build_referral_link,
     send_referral_email,
@@ -97,6 +101,7 @@ def get_referral_link(
 )
 def send_referral(
     payload: ReferralEmailRequest,
+    db: Session = Depends(deps.get_db),
     current_user: Company = Depends(deps.get_current_user),
 ) -> ReferralEmailResponse:
     if current_user.role != Role.COMPANY:
@@ -106,10 +111,102 @@ def send_referral(
         )
     try:
         link = build_referral_link(current_user.id)
-        send_referral_email(payload.email, current_user.name, link)
+        invited_email = str(payload.email).strip().lower()
+        if invited_email == current_user.email.strip().lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="You cannot invite your own email address.",
+            )
+        invite = (
+            db.query(ReferralInvite)
+            .filter(
+                ReferralInvite.referrer_company_id == current_user.id,
+                ReferralInvite.invited_email == invited_email,
+            )
+            .first()
+        )
+        if invite and invite.joined_company_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This person has already joined through your referral.",
+            )
+        send_referral_email(invited_email, current_user.name, link)
+        if invite is None:
+            invite = ReferralInvite(
+                referrer_company_id=current_user.id,
+                invited_email=invited_email,
+                source="email",
+            )
+            db.add(invite)
+        invite.source = "email"
+        invite.sent_at = datetime.now(timezone.utc)
+        db.commit()
     except ReferralServiceError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return ReferralEmailResponse(referral_link=link)
+
+
+@router.get(
+    "/referrals",
+    response_model=ReferralStatsResponse,
+    summary="Get the logged-in company's referral status and invite counts",
+)
+def get_referral_stats(
+    db: Session = Depends(deps.get_db),
+    current_user: Company = Depends(deps.get_current_user),
+) -> ReferralStatsResponse:
+    if current_user.role != Role.COMPANY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only companies can view referral statistics.",
+        )
+
+    invites = (
+        db.query(ReferralInvite)
+        .filter(ReferralInvite.referrer_company_id == current_user.id)
+        .order_by(ReferralInvite.created_at.desc(), ReferralInvite.id.desc())
+        .all()
+    )
+    invite_items = [
+        {
+            "invited_email": invite.invited_email,
+            "status": "joined" if invite.joined_company_id is not None else "pending",
+            "source": invite.source,
+            "credits": REFERRAL_REWARD_CREDITS if invite.joined_company_id is not None else 0,
+            "sent_at": invite.sent_at,
+            "joined_at": invite.joined_at,
+        }
+        for invite in invites
+    ]
+    known_emails = {invite.invited_email.strip().lower() for invite in invites}
+    referred_companies = (
+        db.query(Company)
+        .filter(Company.referred_by_company_id == current_user.id)
+        .all()
+    )
+    for referred_company in referred_companies:
+        invited_email = referred_company.email.strip().lower()
+        if invited_email in known_emails:
+            continue
+        known_emails.add(invited_email)
+        invite_items.append(
+            {
+                "invited_email": invited_email,
+                "status": "joined",
+                "source": "link",
+                "credits": REFERRAL_REWARD_CREDITS,
+                "sent_at": None,
+                "joined_at": referred_company.created_at,
+            }
+        )
+    joined_count = sum(invite["status"] == "joined" for invite in invite_items)
+    return ReferralStatsResponse(
+        people_invited=len(invite_items),
+        joined=joined_count,
+        pending=len(invite_items) - joined_count,
+        credits_earned=current_user.referral_credits,
+        invites=invite_items,
+    )
 
 @router.get(
     "/{company_id}",

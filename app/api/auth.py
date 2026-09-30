@@ -8,6 +8,7 @@ from app.core import deps
 from app.core import security
 from app.core.config import settings
 from app.models.companies import Company, Role
+from app.models.referral import ReferralInvite
 from app.schemas.token import Token
 from app.schemas.companies import (
     ForgotPasswordRequest,
@@ -16,6 +17,7 @@ from app.schemas.companies import (
     UserResponse,
 )
 from app.services.referral_service import (
+    REFERRAL_REWARD_CREDITS,
     ReferralServiceError,
     build_password_reset_link,
     send_password_reset_email,
@@ -23,7 +25,6 @@ from app.services.referral_service import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-REFERRAL_SIGNUP_REWARD_CREDITS = 100
 
 @router.post("/signup", response_model=Token, status_code=status.HTTP_201_CREATED, summary="Public company signup")
 def signup(
@@ -63,7 +64,24 @@ def signup(
     )
     db.add(company)
     if referrer:
-        referrer.referral_credits += REFERRAL_SIGNUP_REWARD_CREDITS
+        referrer.referral_credits += REFERRAL_REWARD_CREDITS
+        invite = (
+            db.query(ReferralInvite)
+            .filter(
+                ReferralInvite.referrer_company_id == referrer.id,
+                ReferralInvite.invited_email == signup_data.email.strip().lower(),
+            )
+            .first()
+        )
+        if invite is None:
+            invite = ReferralInvite(
+                referrer_company_id=referrer.id,
+                invited_email=signup_data.email.strip().lower(),
+                source="link",
+            )
+            db.add(invite)
+        invite.joined_company_id = company.id
+        invite.joined_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(company)
 
