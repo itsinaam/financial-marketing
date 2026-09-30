@@ -1099,13 +1099,10 @@ def linkedin_callback(
             if access_token:
                 credential.access_token = access_token
                 db.commit()
-                return {
-                    "status": "success",
-                    "message": "🎉 LinkedIn account successfully connected! Access token generated and saved in database.",
-                    "company_id": target_company_id,
-                    "platform": "linkedin",
-                    "next_step": "You can now publish posts using POST /api/credentials/post.",
-                }
+                return RedirectResponse(
+                    url="https://financial-markett.vercel.app/integrations",
+                    status_code=302,
+                )
         except Exception as ex:
             return {
                 "status": "partial_success",
