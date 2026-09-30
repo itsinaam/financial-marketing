@@ -235,6 +235,71 @@ def connect_instagram(
 
 
 @router.get(
+    "/linkedin/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the LinkedIn OAuth URL for a one-click account connection",
+)
+def connect_linkedin(
+    request: Request,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin or testing.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    """Prepare LinkedIn OAuth for the current company."""
+    company = resolve_company(db, auth, company_id)
+    redirect_uri = (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/linkedin/callback"
+    )
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform == "linkedin",
+        )
+        .first()
+    )
+    client_id = credential.client_id if credential else settings.LINKEDIN_CLIENT_ID
+    client_secret = credential.client_secret if credential else settings.LINKEDIN_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "LinkedIn OAuth is not configured. Set LINKEDIN_CLIENT_ID and "
+                "LINKEDIN_CLIENT_SECRET in the server environment."
+            ),
+        )
+
+    if credential:
+        credential.client_id = client_id
+        credential.client_secret = client_secret
+    else:
+        credential = Credentials(
+            company_id=company.id,
+            platform="linkedin",
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        db.add(credential)
+    db.commit()
+
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="linkedin",
+        authorization_url=LinkedInService.get_authorization_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=str(company.id),
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in a browser to log in to LinkedIn and grant access.",
+    )
+
+
+@router.get(
     "/x/connect",
     response_model=OAuthConnectResponse,
     summary="Create the X OAuth URL for a one-click account connection",
@@ -503,23 +568,16 @@ def save_credentials(
 
     if platform_name == "linkedin":
         effective_redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/linkedin/callback"
-        verification = LinkedInService.verify_credentials(
+        auth_url = LinkedInService.get_authorization_url(
             client_id=payload.client_id,
-            client_secret=payload.client_secret,
+            redirect_uri=effective_redirect_uri,
+            state=str(company.id),
         )
-        if verification.get("access_token"):
-            access_token = verification["access_token"]
-            response_msg = "Credentials saved and access token generated successfully."
-        else:
-            auth_url = LinkedInService.get_authorization_url(
-                client_id=payload.client_id,
-                redirect_uri=effective_redirect_uri,
-                state=str(company.id),
-            )
-            response_msg = (
-                f"Credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
-                f"Authorized redirect URLs in your LinkedIn Developer App (Auth tab), then open authorization_url in browser."
-            )
+        response_msg = (
+            f"Credentials saved in database! Make sure '{effective_redirect_uri}' is added to "
+            "Authorized redirect URLs in your LinkedIn Developer App (Auth tab), then open "
+            "authorization_url in a browser and approve the requested permissions."
+        )
 
     elif platform_name == "instagram":
         effective_redirect_uri = f"{base_url}{settings.API_V1_STR}/credentials/instagram/callback"
@@ -640,7 +698,11 @@ def save_credentials(
     if credential:
         credential.client_id = payload.client_id
         credential.client_secret = _maybe_encrypt(payload.client_secret)
-        if access_token:
+        if platform_name == "linkedin":
+            credential.access_token = None
+            credential.refresh_token = None
+            credential.token_expires_at = None
+        elif access_token:
             credential.access_token = _maybe_encrypt(access_token)
         if payload.organization_id:
             credential.organization_id = payload.organization_id

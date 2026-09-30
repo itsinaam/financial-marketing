@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")
     INSTAGRAM_CLIENT_SECRET: str = config("INSTAGRAM_CLIENT_SECRET", default="")
 
+    # LinkedIn app credentials used by the one-click LinkedIn connection flow.
+    LINKEDIN_CLIENT_ID: str = config("LINKEDIN_CLIENT_ID", default="")
+    LINKEDIN_CLIENT_SECRET: str = config("LINKEDIN_CLIENT_SECRET", default="")
+
     # Meta app credentials used by the one-click Facebook Page connection flow.
     FACEBOOK_REDIRECT_URI: str = config("FACEBOOK_REDIRECT_URI", default="")
     FACEBOOK_CLIENT_ID: str = config("FACEBOOK_CLIENT_ID", default="")
