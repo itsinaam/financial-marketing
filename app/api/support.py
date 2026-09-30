@@ -153,44 +153,70 @@ def _mark_delivered_to(db: Session, recipient_role: str, company_id: Optional[in
     return delivered or 0
 
 
-def _store_message(db: Session, company: Company, sender: Company, body: str) -> SupportMessage:
+async def _store_message(
+    db: Session,
+    company_id: int,
+    company_label: str,
+    sender_id: int,
+    sender_role: str,
+    body: str,
+) -> SupportMessageResponse:
+    """
+    Write the message and build its response without a second trip to the
+    database. Whether it was delivered is known before the row is written, and
+    created_at is set here rather than read back, so an insert and a commit is
+    all a message costs - which is what keeps a chat feeling live when the
+    database is a long way from the server.
+    """
+    delivered = await support_manager.other_side_online(company_id, sender_role)
+    now = datetime.now(timezone.utc)
+
     message = SupportMessage(
-        company_id=company.id,
-        sender_id=sender.id,
-        sender_role=sender_role_of(sender),
+        company_id=company_id,
+        sender_id=sender_id,
+        sender_role=sender_role,
         body=body,
+        delivered_at=now if delivered else None,
+        created_at=now,
     )
     db.add(message)
+    db.flush()  # assigns the id without ending the transaction
+
+    response = SupportMessageResponse(
+        id=message.id,
+        company_id=company_id,
+        sender_id=sender_id,
+        sender_role=sender_role,
+        sender_name=SUPPORT_DISPLAY_NAME if sender_role == ADMIN_ROLE else company_label,
+        body=body,
+        delivered_at=now if delivered else None,
+        read_at=None,
+        created_at=now,
+    )
     db.commit()
-    db.refresh(message)
-    return message
+    return response
 
 
-async def _stamp_if_reachable(db: Session, message: SupportMessage) -> None:
-    """One tick becomes two the moment the other side has somewhere to receive it."""
-    if message.delivered_at is not None:
-        return
-    if await support_manager.other_side_online(message.company_id, message.sender_role):
-        message.delivered_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(message)
-
-
-async def _publish(message: SupportMessage, company: Company, exclude: WebSocket | None = None) -> None:
+async def _publish(
+    response: SupportMessageResponse,
+    company_id: int,
+    company_label: str,
+    exclude: WebSocket | None = None,
+) -> None:
     """
     Push a stored message to the live sockets: everyone watching this thread, and
     every Super Admin (for the inbox badge) when it came from a company.
     """
-    payload = _to_response(message, company).model_dump(mode="json")
-    await support_manager.broadcast_to_thread(company.id, {"type": "message", "message": payload}, exclude=exclude)
+    payload = response.model_dump(mode="json")
+    await support_manager.broadcast_to_thread(company_id, {"type": "message", "message": payload}, exclude=exclude)
 
-    if message.sender_role == COMPANY_ROLE:
+    if response.sender_role == COMPANY_ROLE:
         await support_manager.broadcast_to_admins(
             {
                 "type": "inbox",
-                "company_id": company.id,
-                "company_name": company.name or company.email,
-                "preview": message.body[:120],
+                "company_id": company_id,
+                "company_name": company_label,
+                "preview": response.body[:120],
                 "created_at": payload.get("created_at"),
             },
             exclude=exclude,
@@ -257,14 +283,14 @@ async def send_message(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The message is empty.")
 
     company = _thread_company(db, current_user, company_id)
-    message = _store_message(db, company, current_user, body)
-    await _stamp_if_reachable(db, message)
+    label = company.name or company.email
+    response = await _store_message(db, company.id, label, current_user.id, sender_role_of(current_user), body)
 
     # Reaches anyone connected by WebSocket, so a polling client and a live one
     # can hold the same conversation.
-    await _publish(message, company)
+    await _publish(response, company.id, label)
 
-    return _to_response(message, company)
+    return response
 
 
 @router.get(
@@ -504,17 +530,16 @@ async def support_socket(
                     )
                     continue
 
+                # The company and the sender were both resolved at connect time,
+                # so nothing has to be looked up again to write a message.
                 session = SessionLocal()
                 try:
-                    company = session.query(Company).filter(Company.id == thread_id).first()
-                    sender = session.query(Company).filter(Company.id == user_id).first()
-                    if company is None or sender is None:
-                        await websocket.send_json({"type": "error", "detail": "This chat is no longer available."})
-                        continue
-                    stored = _store_message(session, company, sender, body)
-                    await _stamp_if_reachable(session, stored)
-                    payload = _to_response(stored, company).model_dump(mode="json")
-                    company_label = company.name or company.email
+                    response = await _store_message(session, thread_id, thread_name, user_id, my_role, body)
+                    payload = response.model_dump(mode="json")
+                except Exception as err:  # noqa: BLE001 - e.g. the company was deleted mid-chat
+                    session.rollback()
+                    await websocket.send_json({"type": "error", "detail": f"Could not save the message: {err}"})
+                    continue
                 finally:
                     session.close()
 
@@ -528,7 +553,7 @@ async def support_socket(
                         {
                             "type": "inbox",
                             "company_id": thread_id,
-                            "company_name": company_label,
+                            "company_name": thread_name,
                             "preview": body[:120],
                             "created_at": payload.get("created_at"),
                         },
