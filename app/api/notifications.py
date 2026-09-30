@@ -1,25 +1,41 @@
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from urllib.parse import quote
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.core import deps
-from app.api.credentials import resolve_company
+from app.api.credentials import get_request_base_url, resolve_company
+from app.core.config import settings
+from app.core.encryption import encrypt
 from app.models.notification import NotificationChannel
 from app.schemas.notifications import (
     NotificationChannelList,
     NotificationChannelResponse,
     NotificationTriggers,
     SaveChannelRequest,
+    TeamsChannelSelection,
     TestChannelResponse,
 )
 from app.services.notification_service import (
     PROVIDERS,
     NotificationError,
     send_to_channel,
+    get_teams_access_token,
     validate_webhook_url,
     validate_whatsapp_number,
     whatsapp_is_configured,
+)
+from app.services.notification_oauth_service import (
+    NotificationOAuthError,
+    create_state,
+    exchange_microsoft_code,
+    exchange_slack_code,
+    graph_get,
+    microsoft_authorization_url,
+    read_state,
+    slack_authorization_url,
 )
 
 router = APIRouter()
@@ -41,6 +57,8 @@ def _check_provider(provider: str) -> str:
 def _is_connected(channel: NotificationChannel) -> bool:
     if channel.provider == "whatsapp":
         return bool(channel.target)
+    if channel.provider == "teams":
+        return bool(channel.webhook_url or (channel.access_token and channel.channel_id))
     return bool(channel.webhook_url)
 
 
@@ -80,6 +98,215 @@ def _get_channel(db: Session, company_id: int, provider: str) -> Optional[Notifi
         .filter(NotificationChannel.company_id == company_id, NotificationChannel.provider == provider)
         .first()
     )
+
+
+def _oauth_redirect_uri(request: Request, provider: str) -> str:
+    configured_uri = (
+        settings.SLACK_REDIRECT_URI if provider == "slack" else settings.MICROSOFT_TEAMS_REDIRECT_URI
+    )
+    return configured_uri.strip() or (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/notifications/oauth/{provider}/callback"
+    )
+
+
+def _channel_for_oauth(db: Session, company_id: int, provider: str) -> NotificationChannel:
+    channel = _get_channel(db, company_id, provider)
+    if channel is None:
+        channel = NotificationChannel(company_id=company_id, provider=provider)
+        db.add(channel)
+    return channel
+
+
+def _save_microsoft_token(channel: NotificationChannel, token_data: dict) -> None:
+    channel.access_token = encrypt(token_data["access_token"])
+    if token_data.get("refresh_token"):
+        channel.refresh_token = encrypt(token_data["refresh_token"])
+    channel.token_expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=int(token_data.get("expires_in", 3600))
+    )
+
+
+@router.get("/oauth/slack/connect", summary="Start Slack OAuth connection")
+def connect_slack(
+    request: Request,
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> dict:
+    company = resolve_company(db, auth, company_id)
+    if not settings.SLACK_CLIENT_ID or not settings.SLACK_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET on the server first.",
+        )
+    redirect_uri = _oauth_redirect_uri(request, "slack")
+    state = create_state("slack", company.id)
+    return {
+        "provider": "slack",
+        "authorization_url": slack_authorization_url(settings.SLACK_CLIENT_ID, redirect_uri, state),
+        "redirect_uri": redirect_uri,
+    }
+
+
+@router.get("/oauth/slack/callback", summary="Finish Slack OAuth connection")
+def slack_oauth_callback(
+    request: Request,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    db: Session = Depends(deps.get_db),
+) -> dict:
+    if error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Slack authorization failed: {error}")
+    if not code or not state:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Slack did not return an authorization code and state.")
+    try:
+        company_id = read_state(state, "slack")
+        data = exchange_slack_code(code, _oauth_redirect_uri(request, "slack"))
+    except NotificationOAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    webhook = data.get("incoming_webhook") or {}
+    if not webhook.get("url"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Slack did not return an incoming webhook.")
+    channel = _channel_for_oauth(db, company_id, "slack")
+    channel.webhook_url = webhook["url"]
+    channel.target = webhook.get("channel") or webhook.get("channel_id")
+    channel.last_error = None
+    db.commit()
+    return {"status": "success", "provider": "slack", "target": channel.target}
+
+
+@router.get("/oauth/teams/connect", summary="Start Microsoft Teams OAuth connection")
+def connect_teams(
+    request: Request,
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> dict:
+    company = resolve_company(db, auth, company_id)
+    if not settings.MICROSOFT_CLIENT_ID or not settings.MICROSOFT_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET on the server first.",
+        )
+    if not settings.CREDENTIALS_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Set CREDENTIALS_ENCRYPTION_KEY before connecting Microsoft Teams.",
+        )
+    redirect_uri = _oauth_redirect_uri(request, "teams")
+    state = create_state("teams", company.id)
+    return {
+        "provider": "teams",
+        "authorization_url": microsoft_authorization_url(settings.MICROSOFT_CLIENT_ID, redirect_uri, state),
+        "redirect_uri": redirect_uri,
+    }
+
+
+@router.get("/oauth/teams/callback", summary="Finish Microsoft Teams OAuth connection")
+def teams_oauth_callback(
+    request: Request,
+    code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    db: Session = Depends(deps.get_db),
+) -> dict:
+    if error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Microsoft authorization failed: {error}")
+    if not code or not state:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Microsoft did not return an authorization code and state.")
+    try:
+        company_id = read_state(state, "teams")
+        token_data = exchange_microsoft_code(code, _oauth_redirect_uri(request, "teams"))
+        channel = _channel_for_oauth(db, company_id, "teams")
+        _save_microsoft_token(channel, token_data)
+    except NotificationOAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+    channel.webhook_url = None
+    channel.team_id = None
+    channel.channel_id = None
+    channel.target = None
+    channel.last_error = None
+    db.commit()
+    return {"status": "success", "provider": "teams", "next_step": "Select a team and channel from the Teams connection settings."}
+
+
+@router.get("/teams/teams", summary="List Teams available to the connected Microsoft account")
+def list_teams(
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> dict:
+    company = resolve_company(db, auth, company_id)
+    channel = _get_channel(db, company.id, "teams")
+    if channel is None or not channel.access_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Connect Microsoft Teams first.")
+    try:
+        token = get_teams_access_token(channel)
+        data = graph_get(token, "/me/joinedTeams?$select=id,displayName")
+    except (NotificationError, NotificationOAuthError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if db.is_modified(channel):
+        db.commit()
+    return {"teams": [{"id": item["id"], "name": item["displayName"]} for item in data.get("value", [])]}
+
+
+@router.get("/teams/teams/{team_id}/channels", summary="List channels in a joined Team")
+def list_team_channels(
+    team_id: str,
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> dict:
+    company = resolve_company(db, auth, company_id)
+    channel = _get_channel(db, company.id, "teams")
+    if channel is None or not channel.access_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Connect Microsoft Teams first.")
+    try:
+        token = get_teams_access_token(channel)
+        data = graph_get(token, f"/teams/{quote(team_id, safe='')}/channels?$select=id,displayName")
+    except (NotificationError, NotificationOAuthError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if db.is_modified(channel):
+        db.commit()
+    return {"channels": [{"id": item["id"], "name": item["displayName"]} for item in data.get("value", [])]}
+
+
+@router.put("/teams/channel", summary="Save the Teams channel chosen by the user")
+def select_teams_channel(
+    payload: TeamsChannelSelection,
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> NotificationChannelResponse:
+    company = resolve_company(db, auth, company_id)
+    channel = _get_channel(db, company.id, "teams")
+    if channel is None or not channel.access_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Connect Microsoft Teams first.")
+    try:
+        token = get_teams_access_token(channel)
+        data = graph_get(
+            token,
+            f"/teams/{quote(payload.team_id, safe='')}/channels?$select=id,displayName",
+        )
+    except (NotificationError, NotificationOAuthError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    selected = next((item for item in data.get("value", []) if item.get("id") == payload.channel_id), None)
+    if selected is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That channel was not found in the selected Team.")
+
+    channel.team_id = payload.team_id
+    channel.channel_id = payload.channel_id
+    channel.target = selected.get("displayName")
+    channel.last_error = None
+    db.commit()
+    db.refresh(channel)
+    return _to_response("teams", channel)
 
 
 @router.get(
@@ -171,6 +398,13 @@ def disconnect_channel(
 
     channel.webhook_url = None
     if name == "whatsapp":
+        channel.target = None
+    if name == "teams":
+        channel.access_token = None
+        channel.refresh_token = None
+        channel.token_expires_at = None
+        channel.team_id = None
+        channel.channel_id = None
         channel.target = None
     channel.last_error = None
     db.commit()

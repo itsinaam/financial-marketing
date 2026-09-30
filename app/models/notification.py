@@ -17,6 +17,12 @@ class NotificationChannel(Base):
     target = Column(String(500), nullable=True)
     # Where messages are actually delivered; a secret, never returned in full.
     webhook_url = Column(Text, nullable=True)
+    # Microsoft Graph credentials and destination for OAuth-connected Teams channels.
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    team_id = Column(String(255), nullable=True)
+    channel_id = Column(String(255), nullable=True)
 
     notify_ready_for_approval = Column(Boolean, default=True, nullable=False, server_default="true")
     notify_published = Column(Boolean, default=False, nullable=False, server_default="false")

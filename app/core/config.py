@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = config("WHATSAPP_ACCESS_TOKEN", default="")
     WHATSAPP_API_VERSION: str = config("WHATSAPP_API_VERSION", default="v21.0")
 
+    # OAuth apps used by one-click team notification connections.
+    SLACK_CLIENT_ID: str = config("SLACK_CLIENT_ID", default="")
+    SLACK_CLIENT_SECRET: str = config("SLACK_CLIENT_SECRET", default="")
+    SLACK_REDIRECT_URI: str = config("SLACK_REDIRECT_URI", default="")
+    MICROSOFT_CLIENT_ID: str = config("MICROSOFT_CLIENT_ID", default="")
+    MICROSOFT_CLIENT_SECRET: str = config("MICROSOFT_CLIENT_SECRET", default="")
+    MICROSOFT_TENANT_ID: str = config("MICROSOFT_TENANT_ID", default="organizations")
+    MICROSOFT_TEAMS_REDIRECT_URI: str = config("MICROSOFT_TEAMS_REDIRECT_URI", default="")
+
     # X app credentials used by the one-click X connection flow.
     X_REDIRECT_URI: str = config("X_REDIRECT_URI", default="")
     X_CLIENT_ID: str = config("X_CLIENT_ID", default="")

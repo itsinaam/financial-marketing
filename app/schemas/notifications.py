@@ -41,6 +41,11 @@ class SaveChannelRequest(BaseModel):
     failed: Optional[bool] = None
 
 
+class TeamsChannelSelection(BaseModel):
+    team_id: str = Field(..., min_length=1, max_length=255)
+    channel_id: str = Field(..., min_length=1, max_length=255)
+
+
 class TestChannelResponse(BaseModel):
     success: bool
     message: str

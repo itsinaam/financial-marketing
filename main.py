@@ -9,7 +9,19 @@ from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
 from app.core.plans import seed_plans
-from app.models import companies, credentials, library, payment, post, blog, notification, brand, plan, support  # noqa: F401 - register models on Base
+from app.models import (
+    companies,
+    credentials,
+    library,
+    payment,
+    post,
+    blog,
+    notification,
+    brand,
+    plan,
+    support,
+    referral,
+)  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
 
@@ -76,7 +88,21 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ"
             ))
             connection.execute(text(
-
+                "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS access_token TEXT"
+            ))
+            connection.execute(text(
+                "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS refresh_token TEXT"
+            ))
+            connection.execute(text(
+                "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ"
+            ))
+            connection.execute(text(
+                "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS team_id VARCHAR(255)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS channel_id VARCHAR(255)"
+            ))
+            connection.execute(text(
                 "ALTER TABLE payments ADD COLUMN IF NOT EXISTS plan_code VARCHAR(30)"
             ))
             connection.execute(text(
