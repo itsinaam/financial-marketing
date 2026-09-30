@@ -233,6 +233,7 @@ def get_dashboard(
     return DashboardResponse(
         stats=stats,
         platforms=[PlatformSummary(platform=name, **counts) for name, counts in platforms.items()],
+        connected_accounts=company.connected_accounts,
         top_post=top_post,
         recent_activity=activity[:ACTIVITY_LIMIT],
         coming_up=upcoming[:COMING_UP_LIMIT],
@@ -289,6 +290,7 @@ def get_super_admin_dashboard(
                 name=company.name,
                 email=company.email,
                 avatar_url=company.avatar_url,
+                connected_accounts=company.connected_accounts,
                 plan_code=code,
                 plan_name=plan["plan_name"],
                 joined_at=joined,

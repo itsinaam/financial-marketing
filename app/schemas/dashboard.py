@@ -60,6 +60,7 @@ class ComingUpItem(BaseModel):
 class DashboardResponse(BaseModel):
     stats: DashboardStats
     platforms: List[PlatformSummary]
+    connected_accounts: List[str] = Field(default_factory=list, description="Platforms connected for the current company")
     top_post: Optional[TopPost] = None
     recent_activity: List[ActivityItem]
     coming_up: List[ComingUpItem]
@@ -70,6 +71,7 @@ class AdminCompanyRow(BaseModel):
     name: str
     email: str
     avatar_url: Optional[str] = None
+    connected_accounts: List[str] = Field(default_factory=list, description="Platforms connected for this company")
     plan_code: str
     plan_name: str
     joined_at: Optional[datetime] = None
