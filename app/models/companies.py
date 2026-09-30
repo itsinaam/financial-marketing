@@ -32,6 +32,20 @@ class Company(Base):
 
 
     @property
+    def connected_accounts(self) -> list[str]:
+        """Return a normalized list of connected platform names for this company."""
+        connected: list[str] = []
+        for credential in self.credentials or []:
+            platform = (credential.platform or "").strip().lower()
+            if not platform:
+                continue
+            if platform in {"twitter", "x"}:
+                platform = "x"
+            if platform not in connected:
+                connected.append(platform)
+        return connected
+
+    @property
     def plan(self) -> dict:
         # Only a paid payment counts as a paid plan. A checkout session that was
         # opened but never paid stays "pending"; everyone else is on Free.

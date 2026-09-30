@@ -68,6 +68,7 @@ class UserResponse(UserBase):
     referral_credits: int = 0
     created_at: datetime | None = None
     avatar_url: str | None = None
+    connected_accounts: List[str] = []
     plan: PlanDetails
     payments: List[PaymentResponse] = []
 
