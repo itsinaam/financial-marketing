@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner, settings, dashboard, notifications, themes, subscriptions
+from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner, settings, dashboard, notifications, themes, subscriptions, support
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -17,4 +17,5 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboar
 api_router.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 api_router.include_router(themes.router, prefix="/themes", tags=["Themes & Brands"])
 api_router.include_router(subscriptions.router, prefix="/subscriptions", tags=["Subscriptions"])
+api_router.include_router(support.router, prefix="/support", tags=["Support Chat"])
 

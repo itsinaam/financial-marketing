@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.database import Base, engine, SessionLocal
 from app.db.init_db import init_db
 from app.core.plans import seed_plans
-from app.models import companies, credentials, library, payment, post, blog, notification, brand, plan  # noqa: F401 - register models on Base
+from app.models import companies, credentials, library, payment, post, blog, notification, brand, plan, support  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
 
