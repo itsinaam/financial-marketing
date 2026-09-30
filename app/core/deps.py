@@ -36,7 +36,17 @@ def get_current_user(auth: HTTPAuthorizationCredentials = Depends(security_schem
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
+    # A password-reset token is signed with the same key and carries the same
+    # `sub`, so without this it would pass as a full session - including through
+    # get_current_superadmin. It may only be spent on resetting a password.
+    if payload.get("purpose"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not token_data.sub:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
