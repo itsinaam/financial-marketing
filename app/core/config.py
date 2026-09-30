@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     SLACK_CLIENT_ID: str = config("SLACK_CLIENT_ID", default="")
     SLACK_CLIENT_SECRET: str = config("SLACK_CLIENT_SECRET", default="")
     SLACK_REDIRECT_URI: str = config("SLACK_REDIRECT_URI", default="")
+    
     MICROSOFT_CLIENT_ID: str = config("MICROSOFT_CLIENT_ID", default="")
     MICROSOFT_CLIENT_SECRET: str = config("MICROSOFT_CLIENT_SECRET", default="")
     MICROSOFT_TENANT_ID: str = config("MICROSOFT_TENANT_ID", default="organizations")
