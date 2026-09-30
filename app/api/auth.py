@@ -23,7 +23,7 @@ from app.services.referral_service import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-REFERRAL_SIGNUP_REWARD_CREDITS = 10
+REFERRAL_SIGNUP_REWARD_CREDITS = 100
 
 @router.post("/signup", response_model=Token, status_code=status.HTTP_201_CREATED, summary="Public company signup")
 def signup(
