@@ -13,6 +13,7 @@ class SupportMessageResponse(BaseModel):
     sender_role: str
     sender_name: str
     body: str
+    delivered_at: Optional[datetime] = None
     read_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
@@ -31,6 +32,9 @@ class SupportThreadResponse(BaseModel):
     company_email: str
     messages: List[SupportMessageResponse]
     unread_count: int = 0
+    # Whether the far end of this thread has a live socket right now. Always
+    # False on a host that cannot hold connections open.
+    other_online: bool = False
 
 
 class SupportConversationRow(BaseModel):

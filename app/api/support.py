@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -28,15 +29,18 @@ from app.schemas.support import (
     SupportThreadResponse,
     UnreadCountResponse,
 )
-from app.services.support_ws import support_manager
+from app.services.support_ws import ADMIN_ROLE, COMPANY_ROLE, support_manager
 
 router = APIRouter()
 
-COMPANY_ROLE = "company"
-ADMIN_ROLE = "superadmin"
 # What a company sees as the name on the Support side of the chat.
 SUPPORT_DISPLAY_NAME = "Support"
 MAX_BODY_LENGTH = 4000
+# A browser tab that is closed abruptly, a laptop that sleeps or a dropped
+# network leaves a socket that never sends a close frame, and the person behind
+# it would otherwise show as online forever. The client sends a ping every 25s,
+# so nothing heard in this long means the connection is gone.
+IDLE_TIMEOUT_SECONDS = 70
 
 
 def is_admin(user: Company) -> bool:
@@ -89,6 +93,7 @@ def _to_response(message: SupportMessage, company: Company) -> SupportMessageRes
         sender_role=message.sender_role,
         sender_name=name,
         body=message.body,
+        delivered_at=message.delivered_at,
         read_at=message.read_at,
         created_at=message.created_at,
     )
@@ -114,6 +119,7 @@ def _unread_for(db: Session, user: Company) -> int:
 def _mark_thread_read(db: Session, company_id: int, reader_role: str) -> int:
     """Stamp read_at on whatever the *other* side wrote in this thread."""
     other_side = ADMIN_ROLE if reader_role == COMPANY_ROLE else COMPANY_ROLE
+    now = datetime.now(timezone.utc)
     marked = (
         db.query(SupportMessage)
         .filter(
@@ -121,10 +127,30 @@ def _mark_thread_read(db: Session, company_id: int, reader_role: str) -> int:
             SupportMessage.sender_role == other_side,
             SupportMessage.read_at.is_(None),
         )
-        .update({SupportMessage.read_at: datetime.now(timezone.utc)}, synchronize_session=False)
+        .update({SupportMessage.read_at: now, SupportMessage.delivered_at: func.coalesce(SupportMessage.delivered_at, now)}, synchronize_session=False)
     )
     db.commit()
     return marked or 0
+
+
+def _mark_delivered_to(db: Session, recipient_role: str, company_id: Optional[int] = None) -> int:
+    """
+    Stamp delivered_at on everything waiting for the side that just came online.
+
+    A company only ever receives its own thread. Support is one counterparty for
+    every company, so a Super Admin coming online delivers what all of them sent.
+    """
+    other_side = ADMIN_ROLE if recipient_role == COMPANY_ROLE else COMPANY_ROLE
+    query = db.query(SupportMessage).filter(
+        SupportMessage.sender_role == other_side,
+        SupportMessage.delivered_at.is_(None),
+    )
+    if company_id is not None:
+        query = query.filter(SupportMessage.company_id == company_id)
+
+    delivered = query.update({SupportMessage.delivered_at: datetime.now(timezone.utc)}, synchronize_session=False)
+    db.commit()
+    return delivered or 0
 
 
 def _store_message(db: Session, company: Company, sender: Company, body: str) -> SupportMessage:
@@ -138,6 +164,16 @@ def _store_message(db: Session, company: Company, sender: Company, body: str) ->
     db.commit()
     db.refresh(message)
     return message
+
+
+async def _stamp_if_reachable(db: Session, message: SupportMessage) -> None:
+    """One tick becomes two the moment the other side has somewhere to receive it."""
+    if message.delivered_at is not None:
+        return
+    if await support_manager.other_side_online(message.company_id, message.sender_role):
+        message.delivered_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(message)
 
 
 async def _publish(message: SupportMessage, company: Company, exclude: WebSocket | None = None) -> None:
@@ -161,18 +197,28 @@ async def _publish(message: SupportMessage, company: Company, exclude: WebSocket
         )
 
 
+async def _announce_presence(company_id: int, role: str, online: bool, exclude: WebSocket | None = None) -> None:
+    payload = {"type": "presence", "role": role, "online": online, "company_id": company_id}
+    if role == COMPANY_ROLE:
+        await support_manager.broadcast_to_thread(company_id, payload, exclude=exclude)
+    else:
+        # Support is online for every company, not only the thread this admin opened.
+        await support_manager.broadcast_to_companies(payload, exclude=exclude)
+
+
 @router.get(
     "/messages",
     response_model=SupportThreadResponse,
     summary="The Support chat history for one company (oldest first)",
 )
-def get_thread(
+async def get_thread(
     company_id: Optional[int] = Query(None, description="Required for a Super Admin: whose chat to open"),
     limit: int = Query(200, ge=1, le=500, description="How many of the most recent messages to return"),
     db: Session = Depends(deps.get_db),
     current_user: Company = Depends(deps.get_current_user),
 ) -> Any:
     company = _thread_company(db, current_user, company_id)
+    my_side = sender_role_of(current_user)
 
     recent = (
         db.query(SupportMessage)
@@ -182,8 +228,6 @@ def get_thread(
         .all()
     )
     messages = [_to_response(m, company) for m in reversed(recent)]
-
-    my_side = sender_role_of(current_user)
     unread = sum(1 for m in messages if m.sender_role != my_side and m.read_at is None)
 
     return SupportThreadResponse(
@@ -192,6 +236,7 @@ def get_thread(
         company_email=company.email,
         messages=messages,
         unread_count=unread,
+        other_online=await support_manager.other_side_online(company.id, my_side),
     )
 
 
@@ -213,6 +258,7 @@ async def send_message(
 
     company = _thread_company(db, current_user, company_id)
     message = _store_message(db, company, current_user, body)
+    await _stamp_if_reachable(db, message)
 
     # Reaches anyone connected by WebSocket, so a polling client and a live one
     # can hold the same conversation.
@@ -276,7 +322,10 @@ def list_conversations(
         )
 
     # Busiest first, so anyone waiting on a reply is at the top.
-    rows.sort(key=lambda r: (r.unread_count > 0, r.last_message_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    rows.sort(
+        key=lambda r: (r.unread_count > 0, r.last_message_at or datetime.min.replace(tzinfo=timezone.utc)),
+        reverse=True,
+    )
 
     return SupportConversationsResponse(conversations=rows, total_unread=sum(unread_by_company.values()))
 
@@ -286,13 +335,18 @@ def list_conversations(
     response_model=MarkReadResponse,
     summary="Mark the other side's messages in this thread as read",
 )
-def mark_read(
+async def mark_read(
     company_id: Optional[int] = Query(None, description="Required for a Super Admin: whose chat was read"),
     db: Session = Depends(deps.get_db),
     current_user: Company = Depends(deps.get_current_user),
 ) -> Any:
     company = _thread_company(db, current_user, company_id)
-    marked = _mark_thread_read(db, company.id, sender_role_of(current_user))
+    my_side = sender_role_of(current_user)
+    marked = _mark_thread_read(db, company.id, my_side)
+    if marked:
+        await support_manager.broadcast_to_thread(
+            company.id, {"type": "read", "company_id": company.id, "read_by": my_side}
+        )
     return MarkReadResponse(marked_read=marked)
 
 
@@ -344,8 +398,9 @@ async def support_socket(
     Send `{"type": "message", "body": "..."}` to post, `{"type": "read"}` to clear
     the unread badge on the other side, and `{"type": "ping"}` to keep the socket
     warm. The server sends `{"type": "ready"}` once on connect, then
-    `{"type": "message"}`, `{"type": "read"}` and - for Super Admins - an
-    `{"type": "inbox"}` nudge for threads they are not currently watching.
+    `{"type": "message"}`, `{"type": "delivered"}`, `{"type": "read"}`,
+    `{"type": "presence"}` and - for Super Admins - an `{"type": "inbox"}` nudge
+    for threads they are not currently watching.
 
     Note: this needs a long-running server. On Vercel's serverless functions the
     handshake cannot succeed, so the client falls back to polling the REST
@@ -382,9 +437,14 @@ async def support_socket(
         db.close()
 
     await websocket.accept()
-    await support_manager.join_thread(thread_id, websocket)
-    if admin:
-        await support_manager.join_admins(websocket)
+    await support_manager.join(thread_id, websocket, my_role)
+
+    # Whatever was waiting for this side has now reached it.
+    session = SessionLocal()
+    try:
+        delivered = _mark_delivered_to(session, my_role, None if admin else thread_id)
+    finally:
+        session.close()
 
     await websocket.send_json(
         {
@@ -392,17 +452,39 @@ async def support_socket(
             "company_id": thread_id,
             "company_name": thread_name,
             "role": my_role,
+            "other_online": await support_manager.other_side_online(thread_id, my_role),
         }
     )
+
+    if delivered:
+        notice = {"type": "delivered", "delivered_to": my_role}
+        if admin:
+            await support_manager.broadcast_to_companies(notice, exclude=websocket)
+        else:
+            await support_manager.broadcast_to_thread(thread_id, notice, exclude=websocket)
+
+    await _announce_presence(thread_id, my_role, True, exclude=websocket)
 
     try:
         while True:
             try:
-                incoming = await websocket.receive_json()
+                incoming = await asyncio.wait_for(websocket.receive_json(), timeout=IDLE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                # Nothing heard for long enough that the peer is presumed gone.
+                # Returning from the handler does not hang up on its own, so the
+                # close has to be sent here or the socket lingers and its owner
+                # keeps showing as online.
+                try:
+                    await websocket.close(code=1001)
+                except Exception:  # noqa: BLE001 - it may already be gone
+                    pass
+                break
             except WebSocketDisconnect:
                 raise
             except Exception:  # noqa: BLE001 - anything that isn't JSON
-                await websocket.send_json({"type": "error", "detail": "Send JSON, for example {\"type\":\"message\",\"body\":\"hi\"}."})
+                await websocket.send_json(
+                    {"type": "error", "detail": "Send JSON, for example {\"type\":\"message\",\"body\":\"hi\"}."}
+                )
                 continue
 
             kind = (incoming or {}).get("type")
@@ -430,7 +512,9 @@ async def support_socket(
                         await websocket.send_json({"type": "error", "detail": "This chat is no longer available."})
                         continue
                     stored = _store_message(session, company, sender, body)
+                    await _stamp_if_reachable(session, stored)
                     payload = _to_response(stored, company).model_dump(mode="json")
+                    company_label = company.name or company.email
                 finally:
                     session.close()
 
@@ -444,7 +528,7 @@ async def support_socket(
                         {
                             "type": "inbox",
                             "company_id": thread_id,
-                            "company_name": thread_name,
+                            "company_name": company_label,
                             "preview": body[:120],
                             "created_at": payload.get("created_at"),
                         },
@@ -476,6 +560,12 @@ async def support_socket(
 
         logging.getLogger("SupportWebSocket").info("Support socket ended unexpectedly: %s", err)
     finally:
-        await support_manager.leave_thread(thread_id, websocket)
-        if admin:
-            await support_manager.leave_admins(websocket)
+        await support_manager.leave(thread_id, websocket)
+        # Only say this side went away once nobody of that role is left.
+        still_here = (
+            await support_manager.support_online()
+            if my_role == ADMIN_ROLE
+            else await support_manager.company_online(thread_id)
+        )
+        if not still_here:
+            await _announce_presence(thread_id, my_role, False, exclude=websocket)

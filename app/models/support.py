@@ -27,5 +27,8 @@ class SupportMessage(Base):
     sender_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
     sender_role = Column(String(20), nullable=False)  # "company" | "superadmin"
     body = Column(Text, nullable=False)
+    # Stamped when the other side was reachable, then when they opened it -
+    # one tick, two ticks, two blue ticks.
+    delivered_at = Column(DateTime(timezone=True), nullable=True)
     read_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
