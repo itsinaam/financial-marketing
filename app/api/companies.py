@@ -6,6 +6,16 @@ from app.core import deps
 from app.core import security
 from app.models.companies import Company,Role
 from app.schemas.companies import UserCreate, UserResponse, UserDeleteResponse
+from app.schemas.referrals import (
+    ReferralEmailRequest,
+    ReferralEmailResponse,
+    ReferralLinkResponse,
+)
+from app.services.referral_service import (
+    ReferralServiceError,
+    build_referral_link,
+    send_referral_email,
+)
 
 router = APIRouter()
 
@@ -60,6 +70,46 @@ def create_company(
     db.commit()
     db.refresh(company)
     return company
+
+@router.get(
+    "/referral-link",
+    response_model=ReferralLinkResponse,
+    summary="Get the logged-in company's referral link",
+)
+def get_referral_link(
+    current_user: Company = Depends(deps.get_current_user),
+) -> ReferralLinkResponse:
+    if current_user.role != Role.COMPANY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only companies can create referral links.",
+        )
+    try:
+        return ReferralLinkResponse(referral_link=build_referral_link(current_user.id))
+    except ReferralServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post(
+    "/referrals/send",
+    response_model=ReferralEmailResponse,
+    summary="Email the company's referral link",
+)
+def send_referral(
+    payload: ReferralEmailRequest,
+    current_user: Company = Depends(deps.get_current_user),
+) -> ReferralEmailResponse:
+    if current_user.role != Role.COMPANY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only companies can send referral invitations.",
+        )
+    try:
+        link = build_referral_link(current_user.id)
+        send_referral_email(payload.email, current_user.name, link)
+    except ReferralServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return ReferralEmailResponse(referral_link=link)
 
 @router.get(
     "/{company_id}",

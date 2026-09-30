@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Enum, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -17,6 +17,9 @@ class Company(Base):
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
     avatar_url = Column(String(500), nullable=True)
+    referred_by_company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+    referral_credits = Column(Integer, nullable=False, default=0, server_default="0")
+    password_reset_token_version = Column(Integer, nullable=False, default=0, server_default="0")
     hashed_password = Column(String(255), nullable=False)
     role = Column(Enum(Role), default=Role.COMPANY, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)

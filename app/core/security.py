@@ -5,6 +5,7 @@ from passlib.context import CryptContext
 from app.core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = 30
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify plain password against hashed password."""
@@ -29,3 +30,20 @@ def create_access_token(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )
     return encoded_jwt
+
+def create_password_reset_token(subject: str, token_version: int) -> str:
+    """Generate a short-lived token that can only be used to reset a password."""
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+    return jwt.encode(
+        {
+            "exp": expire,
+            "sub": subject,
+            "purpose": "password_reset",
+            "version": token_version,
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+

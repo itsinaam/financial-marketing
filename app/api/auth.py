@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,9 +9,21 @@ from app.core import security
 from app.core.config import settings
 from app.models.companies import Company, Role
 from app.schemas.token import Token
-from app.schemas.companies import UserResponse, UserLogin, SignupRequest
+from app.schemas.companies import (
+    ForgotPasswordRequest,
+    SignupRequest,
+    UserLogin,
+    UserResponse,
+)
+from app.services.referral_service import (
+    ReferralServiceError,
+    build_password_reset_link,
+    send_password_reset_email,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+REFERRAL_SIGNUP_REWARD_CREDITS = 10
 
 @router.post("/signup", response_model=Token, status_code=status.HTTP_201_CREATED, summary="Public company signup")
 def signup(
@@ -27,6 +40,18 @@ def signup(
             detail="An account with this email already exists.",
         )
 
+    referrer = None
+    if signup_data.referrer_id is not None:
+        referrer = db.query(Company).filter(
+            Company.id == signup_data.referrer_id,
+            Company.role == Role.COMPANY,
+        ).first()
+        if not referrer:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The referral link is invalid.",
+            )
+
     company = Company(
         email=signup_data.email,
         hashed_password=security.get_password_hash(signup_data.password),
@@ -34,8 +59,11 @@ def signup(
         role=Role.COMPANY,
         is_active=True,
         is_superuser=False,
+        referred_by_company_id=referrer.id if referrer else None,
     )
     db.add(company)
+    if referrer:
+        referrer.referral_credits += REFERRAL_SIGNUP_REWARD_CREDITS
     db.commit()
     db.refresh(company)
 
@@ -74,6 +102,37 @@ def login_json(
         ),
         "token_type": "bearer",
     }
+
+@router.post("/forgot-password", summary="Request a password reset")
+def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(deps.get_db),
+) -> dict[str, str]:
+    user = db.query(Company).filter(Company.email == request.email).first()
+    if user and user.is_active:
+        updated = db.query(Company).filter(
+            Company.id == user.id,
+            Company.is_active.is_(True),
+        ).update(
+            {
+                Company.password_reset_token_version:
+                    Company.password_reset_token_version + 1
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+        if updated:
+            db.refresh(user)
+            token = security.create_password_reset_token(
+                user.email, user.password_reset_token_version
+            )
+            try:
+                reset_link = build_password_reset_link(token)
+                send_password_reset_email(user.email, reset_link)
+            except ReferralServiceError:
+                logger.exception("Failed to send a password reset email")
+
+    return {"message": "If an account exists for that email, a reset link has been sent."}
 
 @router.get("/me", response_model=UserResponse, summary="Get current logged in user details")
 def read_user_me(

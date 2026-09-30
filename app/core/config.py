@@ -7,6 +7,13 @@ class Settings(BaseSettings):
     APP_NAME: str = config("APP_NAME")
     DATABASE_URL: str = config("DATABASE_URL")
     PUBLIC_BASE_URL: str = config("PUBLIC_BASE_URL", default="")
+    PASSWORD_RESET_URL: str = config("PASSWORD_RESET_URL", default="")
+    REFERRAL_SIGNUP_URL: str = config("REFERRAL_SIGNUP_URL", default="")
+    SMTP_HOST: str = config("SMTP_HOST", default="")
+    SMTP_PORT: int = config("SMTP_PORT", default=587)
+    SMTP_USER: str = config("SMTP_USER", default="")
+    SMTP_PASSWORD: str = config("SMTP_PASSWORD", default="")
+    EMAILS_FROM_NAME: str = config("EMAILS_FROM_NAME", default="Alsabouh")
     INSTAGRAM_REDIRECT_URI: str = config("INSTAGRAM_REDIRECT_URI", default="")
 
     # Meta app credentials used by the one-click Instagram connection flow.
