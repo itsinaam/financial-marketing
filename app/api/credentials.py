@@ -16,6 +16,7 @@ from app.schemas.credentials import (
     PostResponse,
     CredentialsResponse,
     PlatformStatusResponse,
+    PlatformDisconnectResponse,
     OAuthConnectResponse,
 )
 from app.schemas.token import TokenPayload
@@ -179,6 +180,56 @@ def get_linked_platforms(
             )
 
     return results
+
+
+@router.delete(
+    "/disconnect/{provider}",
+    response_model=PlatformDisconnectResponse,
+    summary="Disconnect a social platform for the current company",
+)
+def disconnect_platform(
+    provider: str,
+    company_id: Optional[int] = Query(
+        None,
+        description="Optional company ID override for an authenticated super admin.",
+    ),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> PlatformDisconnectResponse:
+    company = resolve_company(db, auth, company_id)
+    platform = provider.strip().lower()
+    if platform == "twitter":
+        platform = "x"
+    if platform not in CORE_PLATFORMS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider must be instagram, facebook, linkedin, or x.",
+        )
+
+    platform_names = [platform, "twitter"] if platform == "x" else [platform]
+    credentials = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company.id,
+            Credentials.platform.in_(platform_names),
+        )
+        .all()
+    )
+    for credential in credentials:
+        db.delete(credential)
+
+    if credentials:
+        db.commit()
+        message = f"{platform} disconnected successfully."
+    else:
+        message = f"{platform} is already disconnected."
+
+    return PlatformDisconnectResponse(
+        company_id=company.id,
+        platform=platform,
+        is_connected=False,
+        message=message,
+    )
 
 
 @router.get(
