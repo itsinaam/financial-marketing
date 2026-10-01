@@ -12,6 +12,7 @@ from app.core.database import SessionLocal
 from app.models.companies import Company
 from app.models.support_request import SupportRequest, SupportRequestEvent
 from app.schemas.support_request import (
+    CompanyRequestSummary,
     DeleteSupportRequests,
     OpenCountResponse,
     SupportRequestDetailResponse,
@@ -462,6 +463,16 @@ def get_support_request(
         .all()
     )
 
+    company_requests = []
+    if request.company_id:
+        company_requests = (
+            db.query(SupportRequest)
+            .filter(SupportRequest.company_id == request.company_id)
+            .order_by(SupportRequest.id.desc())
+            .limit(50)
+            .all()
+        )
+
     return SupportRequestDetailResponse(
         id=request.id,
         company_id=request.company_id,
@@ -473,4 +484,5 @@ def get_support_request(
         status=request.status,
         created_at=request.created_at,
         events=[SupportRequestEventResponse.model_validate(e) for e in events],
+        company_requests=[CompanyRequestSummary.model_validate(r) for r in company_requests],
     )
