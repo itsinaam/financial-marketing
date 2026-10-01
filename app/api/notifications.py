@@ -4,7 +4,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-
+from fastapi.responses import RedirectResponse
 from app.core import deps
 from app.api.credentials import get_request_base_url, resolve_company
 from app.core.config import settings
@@ -175,7 +175,10 @@ def slack_oauth_callback(
     channel.target = webhook.get("channel") or webhook.get("channel_id")
     channel.last_error = None
     db.commit()
-    return {"status": "success", "provider": "slack", "target": channel.target}
+    return RedirectResponse(
+        url="https://financial-markett.vercel.app/notifications",
+        status_code=302,
+    )
 
 
 @router.get("/oauth/teams/connect", summary="Start Microsoft Teams OAuth connection")
