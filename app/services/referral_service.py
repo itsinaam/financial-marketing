@@ -41,7 +41,7 @@ def build_password_reset_link(token: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-def _send_email(recipient: str, subject: str, body: str) -> None:
+def _send_email(recipient: str, subject: str, body: str, reply_to: str | None = None) -> None:
     if not all((settings.SMTP_HOST, settings.SMTP_USER, settings.SMTP_PASSWORD)):
         raise ReferralServiceError(
             "Email sending isn't configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASSWORD."
@@ -51,6 +51,10 @@ def _send_email(recipient: str, subject: str, body: str) -> None:
     message["Subject"] = subject
     message["From"] = formataddr((settings.EMAILS_FROM_NAME, settings.SMTP_USER))
     message["To"] = recipient
+    # Everything here is sent from one mailbox, so without this a reply would go
+    # back to that mailbox instead of the person being answered.
+    if reply_to:
+        message["Reply-To"] = reply_to
     message.set_content(body)
 
     try:

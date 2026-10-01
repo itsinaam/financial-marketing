@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -33,7 +34,9 @@ def _notify_support(
     email: str,
     message: str,
     company_label: str,
+    company_email: str,
     company_id: int,
+    received: str,
 ) -> None:
     """
     Email the request on and record whether it went out.
@@ -48,13 +51,29 @@ def _notify_support(
         logger.warning("No support inbox configured; set SUPPORT_EMAIL or SUPERADMIN_EMAIL.")
         return
 
+    company_line = f"{company_label} <{company_email}> (id {company_id})" if company_email else f"{company_label} (id {company_id})"
     body = (
-        f"New support request from {name} <{email}>\n"
-        f"Company: {company_label} (id {company_id})\n\n"
+        "New support request\n"
+        "\n"
+        f"From:      {name} <{email}>\n"
+        f"Company:   {company_line}\n"
+        f"Received:  {received}\n"
+        f"Reference: #{request_id}\n"
+        "\n"
+        "Message\n"
+        "-------\n"
         f"{message}\n"
+        "\n"
+        "---\n"
+        f"Reply to this email to answer {name} directly.\n"
     )
     try:
-        _send_email(recipient, f"Support request from {name}", body)
+        _send_email(
+            recipient,
+            f"Support request from {name} ({company_label})",
+            body,
+            reply_to=email,
+        )
     except Exception as exc:  # noqa: BLE001 - mail must never take anything else down
         logger.warning("Could not email support request %s: %s", request_id, exc)
         return
@@ -106,7 +125,9 @@ def submit_support_request(
         request.email,
         request.message,
         current_user.name or current_user.email,
+        current_user.email,
         current_user.id,
+        (request.created_at or datetime.now(timezone.utc)).strftime("%d %b %Y, %H:%M UTC"),
     )
 
     return SupportRequestResponse(
