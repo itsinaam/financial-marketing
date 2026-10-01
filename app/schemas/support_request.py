@@ -25,6 +25,16 @@ class SupportRequestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DeleteSupportRequests(BaseModel):
+    """Ids to remove in one go."""
+
+    ids: List[int] = Field(min_length=1, description="The requests to delete")
+
+
+class DeleteSupportRequestsResponse(BaseModel):
+    deleted: int = 0
+
+
 class SupportRequestsResponse(BaseModel):
     """Everything the Super Admin's table needs, newest first."""
 
