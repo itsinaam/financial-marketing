@@ -89,6 +89,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE support_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ"
             ))
             connection.execute(text(
+                "ALTER TABLE support_requests ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'"
+            ))
+            connection.execute(text(
                 "ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS access_token TEXT"
             ))
             connection.execute(text(

@@ -26,4 +26,6 @@ class SupportRequest(Base):
     # The request is stored first and emailed after, so a mail outage loses the
     # notification but never the request itself.
     email_sent = Column(Boolean, nullable=False, default=False, server_default="false")
+    # "open" until somebody has dealt with it, then "closed".
+    status = Column(String(20), nullable=False, default="open", server_default="open", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

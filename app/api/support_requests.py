@@ -12,6 +12,9 @@ from app.models.companies import Company
 from app.models.support_request import SupportRequest
 from app.schemas.support_request import (
     DeleteSupportRequests,
+    UpdateStatusResponse,
+    UpdateSupportRequestStatus,
+    UpdateSupportRequestsStatus,
     DeleteSupportRequestsResponse,
     SubmitSupportRequest,
     SupportRequestResponse,
@@ -138,6 +141,7 @@ def submit_support_request(
         email=request.email,
         message=request.message,
         email_sent=request.email_sent,
+        status=request.status,
         created_at=request.created_at,
     )
 
@@ -178,6 +182,7 @@ def list_support_requests(
             email=r.email,
             message=r.message,
             email_sent=r.email_sent,
+            status=r.status,
             created_at=r.created_at,
         )
         for r in rows
@@ -228,3 +233,62 @@ def delete_support_requests(
     )
     db.commit()
     return DeleteSupportRequestsResponse(deleted=deleted or 0)
+
+
+@router.patch(
+    "/{request_id}",
+    response_model=SupportRequestResponse,
+    dependencies=[Depends(deps.get_current_superadmin)],
+    summary="Open or close one support request (Super Admin only)",
+)
+def set_support_request_status(
+    request_id: int,
+    payload: UpdateSupportRequestStatus,
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    request = db.query(SupportRequest).filter(SupportRequest.id == request_id).first()
+    if request is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No support request with id {request_id}.",
+        )
+
+    request.status = payload.status
+    db.commit()
+    db.refresh(request)
+
+    company = (
+        db.query(Company).filter(Company.id == request.company_id).first()
+        if request.company_id
+        else None
+    )
+    return SupportRequestResponse(
+        id=request.id,
+        company_id=request.company_id,
+        company_name=(company.name or company.email) if company else None,
+        name=request.name,
+        email=request.email,
+        message=request.message,
+        email_sent=request.email_sent,
+        status=request.status,
+        created_at=request.created_at,
+    )
+
+
+@router.post(
+    "/status",
+    response_model=UpdateStatusResponse,
+    dependencies=[Depends(deps.get_current_superadmin)],
+    summary="Open or close several support requests at once (Super Admin only)",
+)
+def set_support_requests_status(
+    payload: UpdateSupportRequestsStatus,
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    updated = (
+        db.query(SupportRequest)
+        .filter(SupportRequest.id.in_(payload.ids))
+        .update({SupportRequest.status: payload.status}, synchronize_session=False)
+    )
+    db.commit()
+    return UpdateStatusResponse(updated=updated or 0)

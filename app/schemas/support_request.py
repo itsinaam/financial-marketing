@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import List, Optional
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -20,9 +22,25 @@ class SupportRequestResponse(BaseModel):
     email: str
     message: str
     email_sent: bool = False
+    status: str = "open"
     created_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UpdateSupportRequestStatus(BaseModel):
+    status: Literal["open", "closed"]
+
+
+class UpdateSupportRequestsStatus(BaseModel):
+    """Move several requests to the same status in one go."""
+
+    ids: List[int] = Field(min_length=1, description="The requests to update")
+    status: Literal["open", "closed"]
+
+
+class UpdateStatusResponse(BaseModel):
+    updated: int = 0
 
 
 class DeleteSupportRequests(BaseModel):
