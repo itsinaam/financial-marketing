@@ -53,6 +53,24 @@ class DeleteSupportRequestsResponse(BaseModel):
     deleted: int = 0
 
 
+class SupportRequestEventResponse(BaseModel):
+    """One line of the timeline on the detail page."""
+
+    id: int
+    kind: str
+    detail: Optional[str] = None
+    actor: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportRequestDetailResponse(SupportRequestResponse):
+    """The request plus everything that has happened to it, oldest first."""
+
+    events: List[SupportRequestEventResponse] = []
+
+
 class SupportRequestsResponse(BaseModel):
     """Everything the Super Admin's table needs, newest first."""
 

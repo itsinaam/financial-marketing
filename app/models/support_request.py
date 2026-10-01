@@ -29,3 +29,32 @@ class SupportRequest(Base):
     # "open" until somebody has dealt with it, then "closed".
     status = Column(String(20), nullable=False, default="open", server_default="open", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SupportRequestEvent(Base):
+    """
+    One thing that happened to a support request.
+
+    The request row only carries where it ended up; this is how it got there -
+    when it arrived, whether the notifications went out, and every time somebody
+    opened or closed it, so the detail page can show the whole story rather than
+    just the current status.
+    """
+
+    __tablename__ = "support_request_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(
+        Integer,
+        ForeignKey("support_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # created | support_emailed | support_email_failed | closed | reopened
+    # | resolved_emailed | resolved_email_failed
+    kind = Column(String(40), nullable=False)
+    # Free text for the one line the timeline shows under the event.
+    detail = Column(Text, nullable=True)
+    # Who did it, when it was a person rather than the system.
+    actor = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

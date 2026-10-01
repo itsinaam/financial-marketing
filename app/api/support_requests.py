@@ -9,9 +9,11 @@ from app.core import deps
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.companies import Company
-from app.models.support_request import SupportRequest
+from app.models.support_request import SupportRequest, SupportRequestEvent
 from app.schemas.support_request import (
     DeleteSupportRequests,
+    SupportRequestDetailResponse,
+    SupportRequestEventResponse,
     UpdateStatusResponse,
     UpdateSupportRequestStatus,
     UpdateSupportRequestsStatus,
@@ -24,6 +26,19 @@ from app.services.referral_service import _send_email
 
 router = APIRouter()
 logger = logging.getLogger("SupportRequests")
+
+
+def _record(session: Session, request_id: int, kind: str, detail: str | None = None, actor: str | None = None) -> None:
+    """
+    Add a line to a request's history. Never raises: a missing history line is
+    not worth failing the thing it was describing.
+    """
+    try:
+        session.add(SupportRequestEvent(request_id=request_id, kind=kind, detail=detail, actor=actor))
+        session.commit()
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        logger.warning("Could not record '%s' on request %s: %s", kind, request_id, exc)
 
 
 def _support_inbox() -> str:
@@ -79,6 +94,11 @@ def _notify_support(
         )
     except Exception as exc:  # noqa: BLE001 - mail must never take anything else down
         logger.warning("Could not email support request %s: %s", request_id, exc)
+        session = SessionLocal()
+        try:
+            _record(session, request_id, "support_email_failed", f"Could not reach {recipient}")
+        finally:
+            session.close()
         return
 
     session = SessionLocal()
@@ -87,6 +107,7 @@ def _notify_support(
         if stored is not None:
             stored.email_sent = True
             session.commit()
+        _record(session, request_id, "support_emailed", f"Sent to {recipient}")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Emailed support request %s but could not mark it: %s", request_id, exc)
     finally:
@@ -117,10 +138,15 @@ def _notify_resolved(request_id: int, name: str, email: str, message: str, recei
         "---\n"
         "If this still is not sorted, reply to this email and we will pick it up again.\n"
     )
+    session = SessionLocal()
     try:
         _send_email(email, "Your support request has been resolved", body, reply_to=_support_inbox() or None)
+        _record(session, request_id, "resolved_emailed", f"Sent to {email}")
     except Exception as exc:  # noqa: BLE001 - the request is closed regardless
         logger.warning("Could not tell %s that request %s was resolved: %s", email, request_id, exc)
+        _record(session, request_id, "resolved_email_failed", f"Could not reach {email}")
+    finally:
+        session.close()
 
 
 def _received_label(value) -> str:
@@ -154,6 +180,7 @@ def submit_support_request(
     db.add(request)
     db.commit()
     db.refresh(request)
+    _record(db, request.id, "created", f"Sent through the Support form by {request.name}")
 
     background.add_task(
         _notify_support,
@@ -272,7 +299,6 @@ def delete_support_requests(
 @router.patch(
     "/{request_id}",
     response_model=SupportRequestResponse,
-    dependencies=[Depends(deps.get_current_superadmin)],
     summary="Open or close one support request (Super Admin only)",
 )
 def set_support_request_status(
@@ -280,6 +306,7 @@ def set_support_request_status(
     payload: UpdateSupportRequestStatus,
     background: BackgroundTasks,
     db: Session = Depends(deps.get_db),
+    current_user: Company = Depends(deps.get_current_superadmin),
 ) -> Any:
     request = db.query(SupportRequest).filter(SupportRequest.id == request_id).first()
     if request is None:
@@ -299,6 +326,15 @@ def set_support_request_status(
             request.email,
             request.message,
             _received_label(request.created_at),
+        )
+
+    if request.status != payload.status:
+        _record(
+            db,
+            request.id,
+            "closed" if payload.status == "closed" else "reopened",
+            None,
+            current_user.name or current_user.email,
         )
 
     request.status = payload.status
@@ -326,13 +362,13 @@ def set_support_request_status(
 @router.post(
     "/status",
     response_model=UpdateStatusResponse,
-    dependencies=[Depends(deps.get_current_superadmin)],
     summary="Open or close several support requests at once (Super Admin only)",
 )
 def set_support_requests_status(
     payload: UpdateSupportRequestsStatus,
     background: BackgroundTasks,
     db: Session = Depends(deps.get_db),
+    current_user: Company = Depends(deps.get_current_superadmin),
 ) -> Any:
     if payload.status == "closed":
         # Read the ones actually changing before the update, so closing a list
@@ -352,10 +388,68 @@ def set_support_requests_status(
                 _received_label(request.created_at),
             )
 
+    # Read which ones actually move before updating, so the history only gains a
+    # line where something really changed.
+    changing = [
+        row.id
+        for row in db.query(SupportRequest)
+        .filter(SupportRequest.id.in_(payload.ids), SupportRequest.status != payload.status)
+        .all()
+    ]
+
     updated = (
         db.query(SupportRequest)
         .filter(SupportRequest.id.in_(payload.ids))
         .update({SupportRequest.status: payload.status}, synchronize_session=False)
     )
     db.commit()
+
+    actor = current_user.name or current_user.email
+    kind = "closed" if payload.status == "closed" else "reopened"
+    for request_id in changing:
+        _record(db, request_id, kind, "Changed with others", actor)
+
     return UpdateStatusResponse(updated=updated or 0)
+
+
+@router.get(
+    "/{request_id}",
+    response_model=SupportRequestDetailResponse,
+    dependencies=[Depends(deps.get_current_superadmin)],
+    summary="One support request with everything that has happened to it (Super Admin only)",
+)
+def get_support_request(
+    request_id: int,
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    request = db.query(SupportRequest).filter(SupportRequest.id == request_id).first()
+    if request is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No support request with id {request_id}.",
+        )
+
+    company = (
+        db.query(Company).filter(Company.id == request.company_id).first()
+        if request.company_id
+        else None
+    )
+    events = (
+        db.query(SupportRequestEvent)
+        .filter(SupportRequestEvent.request_id == request.id)
+        .order_by(SupportRequestEvent.id.asc())
+        .all()
+    )
+
+    return SupportRequestDetailResponse(
+        id=request.id,
+        company_id=request.company_id,
+        company_name=(company.name or company.email) if company else None,
+        name=request.name,
+        email=request.email,
+        message=request.message,
+        email_sent=request.email_sent,
+        status=request.status,
+        created_at=request.created_at,
+        events=[SupportRequestEventResponse.model_validate(e) for e in events],
+    )
