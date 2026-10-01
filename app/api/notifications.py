@@ -399,20 +399,9 @@ def disconnect_channel(
     if channel is None:
         return _to_response(name, None)
 
-    channel.webhook_url = None
-    if name == "whatsapp":
-        channel.target = None
-    if name == "teams":
-        channel.access_token = None
-        channel.refresh_token = None
-        channel.token_expires_at = None
-        channel.team_id = None
-        channel.channel_id = None
-        channel.target = None
-    channel.last_error = None
+    db.delete(channel)
     db.commit()
-    db.refresh(channel)
-    return _to_response(name, channel)
+    return _to_response(name, None)
 
 
 @router.post(

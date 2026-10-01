@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     INSTAGRAM_CLIENT_ID: str = config("INSTAGRAM_CLIENT_ID", default="")
     INSTAGRAM_CLIENT_SECRET: str = config("INSTAGRAM_CLIENT_SECRET", default="")
 
+    # Pinterest app credentials for OAuth and Pin publishing.
+    PINTEREST_CLIENT_ID: str = config("PINTEREST_CLIENT_ID", default="")
+    PINTEREST_CLIENT_SECRET: str = config("PINTEREST_CLIENT_SECRET", default="")
+    PINTEREST_REDIRECT_URI: str = config("PINTEREST_REDIRECT_URI", default="")
+
     # LinkedIn app credentials used by the one-click LinkedIn connection flow.
     LINKEDIN_CLIENT_ID: str = config("LINKEDIN_CLIENT_ID", default="")
     LINKEDIN_CLIENT_SECRET: str = config("LINKEDIN_CLIENT_SECRET", default="")

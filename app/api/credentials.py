@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, File, UploadFile, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -24,6 +25,7 @@ from app.services.linkedin_service import LinkedInService, DEFAULT_MEMBER_SCOPES
 from app.services.instagram_service import InstagramService
 from app.services.facebook_service import FacebookService
 from app.services.twitter_service import TwitterService
+from app.services.pinterest_service import PinterestOAuthError, PinterestService
 from app.services.wordpress_service import WordPressService
 from app.services.blogger_service import BloggerService
 from app.services.wix_service import WixService
@@ -32,7 +34,7 @@ from app.services.storage_service import upload_library_asset
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
 
-CORE_PLATFORMS = ["linkedin", "instagram", "facebook", "x"]
+CORE_PLATFORMS = ["linkedin", "instagram", "facebook", "x", "pinterest"]
 
 # Platforms whose credentials (client_secret/access_token/refresh_token) are
 # encrypted at rest via app/core/encryption.py. Other platforms keep plaintext.
@@ -182,6 +184,51 @@ def get_linked_platforms(
     return results
 
 
+@router.get(
+    "/pinterest/connect",
+    response_model=OAuthConnectResponse,
+    summary="Create the Pinterest OAuth URL for a one-click account connection",
+)
+def connect_pinterest(
+    request: Request,
+    company_id: Optional[int] = Query(None),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> OAuthConnectResponse:
+    company = resolve_company(db, auth, company_id)
+    if not settings.PINTEREST_CLIENT_ID or not settings.PINTEREST_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Set PINTEREST_CLIENT_ID and PINTEREST_CLIENT_SECRET on the server first.",
+        )
+
+    redirect_uri = settings.PINTEREST_REDIRECT_URI.strip() or (
+        f"{get_request_base_url(request)}"
+        f"{settings.API_V1_STR}/credentials/pinterest/callback"
+    )
+    state = jwt.encode(
+        {
+            "provider": "pinterest",
+            "company_id": company.id,
+            "nonce": secrets.token_urlsafe(24),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    return OAuthConnectResponse(
+        company_id=company.id,
+        platform="pinterest",
+        authorization_url=PinterestService.get_authorization_url(
+            settings.PINTEREST_CLIENT_ID,
+            redirect_uri,
+            state,
+        ),
+        redirect_uri=redirect_uri,
+        message="Open authorization_url in a browser to connect Pinterest and grant board/pin permissions.",
+    )
+
+
 @router.delete(
     "/disconnect/{provider}",
     response_model=PlatformDisconnectResponse,
@@ -203,7 +250,7 @@ def disconnect_platform(
     if platform not in CORE_PLATFORMS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Provider must be instagram, facebook, linkedin, or x.",
+            detail="Provider must be instagram, facebook, linkedin, x, or pinterest.",
         )
 
     platform_names = [platform, "twitter"] if platform == "x" else [platform]
@@ -1451,6 +1498,89 @@ def x_callback(
         url="https://financial-markett.vercel.app/integrations?x=not_configured",
         status_code=302,
     )
+
+
+@router.get(
+    "/pinterest/callback",
+    summary="Pinterest OAuth callback that exchanges the code and saves tokens",
+)
+def pinterest_callback(
+    request: Request,
+    code: Optional[str] = Query(None),
+    error: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
+    db: Session = Depends(deps.get_db),
+) -> dict:
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Pinterest authorization failed: {error}",
+        )
+    if not code or not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pinterest did not return an authorization code and state.",
+        )
+
+    try:
+        state_data = jwt.decode(state, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        if state_data.get("provider") != "pinterest" or not state_data.get("nonce"):
+            raise ValueError("Invalid Pinterest OAuth state.")
+        company_id = int(state_data["company_id"])
+    except (JWTError, KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired Pinterest OAuth state. Start the connection again.",
+        ) from exc
+
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if company is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found.")
+
+    redirect_uri = settings.PINTEREST_REDIRECT_URI.strip() or get_current_callback_url(request)
+    try:
+        token_data = PinterestService.exchange_authorization_code(
+            client_id=settings.PINTEREST_CLIENT_ID,
+            client_secret=settings.PINTEREST_CLIENT_SECRET,
+            code=code,
+            redirect_uri=redirect_uri,
+        )
+    except PinterestOAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Pinterest OAuth failed: {exc}",
+        ) from exc
+
+    credential = (
+        db.query(Credentials)
+        .filter(
+            Credentials.company_id == company_id,
+            Credentials.platform == "pinterest",
+        )
+        .first()
+    )
+    if credential is None:
+        credential = Credentials(
+            company_id=company_id,
+            platform="pinterest",
+            client_id=settings.PINTEREST_CLIENT_ID,
+            client_secret=settings.PINTEREST_CLIENT_SECRET,
+        )
+        db.add(credential)
+
+    credential.client_id = settings.PINTEREST_CLIENT_ID
+    credential.client_secret = settings.PINTEREST_CLIENT_SECRET
+    credential.access_token = token_data["access_token"]
+    credential.refresh_token = token_data.get("refresh_token")
+    credential.token_expires_at = token_data.get("expires_at")
+    db.commit()
+
+    return {
+        "status": "success",
+        "provider": "pinterest",
+        "company_id": company_id,
+        "message": "Pinterest account connected successfully.",
+    }
 
 
 @router.get("/blogger/callback", summary="Blogger Callback endpoint that exchanges the Google code and saves tokens + selected blog in DB")
