@@ -178,7 +178,10 @@ def get_referral_stats(
         }
         for invite in invites
     ]
-    known_emails = {invite.invited_email.strip().lower() for invite in invites}
+    invite_items_by_email = {
+        invite_item["invited_email"].strip().lower(): invite_item
+        for invite_item in invite_items
+    }
     referred_companies = (
         db.query(Company)
         .filter(Company.referred_by_company_id == current_user.id)
@@ -186,19 +189,24 @@ def get_referral_stats(
     )
     for referred_company in referred_companies:
         invited_email = referred_company.email.strip().lower()
-        if invited_email in known_emails:
+        existing_invite = invite_items_by_email.get(invited_email)
+        if existing_invite is not None:
+            existing_invite.update(
+                status="joined",
+                credits=REFERRAL_REWARD_CREDITS,
+                joined_at=referred_company.created_at,
+            )
             continue
-        known_emails.add(invited_email)
-        invite_items.append(
-            {
-                "invited_email": invited_email,
-                "status": "joined",
-                "source": "link",
-                "credits": REFERRAL_REWARD_CREDITS,
-                "sent_at": None,
-                "joined_at": referred_company.created_at,
-            }
-        )
+        invite_item = {
+            "invited_email": invited_email,
+            "status": "joined",
+            "source": "link",
+            "credits": REFERRAL_REWARD_CREDITS,
+            "sent_at": None,
+            "joined_at": referred_company.created_at,
+        }
+        invite_items.append(invite_item)
+        invite_items_by_email[invited_email] = invite_item
     joined_count = sum(invite["status"] == "joined" for invite in invite_items)
     return ReferralStatsResponse(
         people_invited=len(invite_items),
