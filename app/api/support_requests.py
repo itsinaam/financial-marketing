@@ -93,6 +93,40 @@ def _notify_support(
         session.close()
 
 
+def _notify_resolved(request_id: int, name: str, email: str, message: str, received: str) -> None:
+    """
+    Tell whoever wrote in that their request has been closed.
+
+    Runs after the response for the same reason the first email does, and a
+    failure is only logged: the request is closed either way, and there is
+    nobody left to report it to. The reply address is the support inbox, so if
+    it turns out not to be sorted their answer comes back to the right place.
+    """
+    body = (
+        f"Hello {name},\n"
+        "\n"
+        "Your support request has been marked resolved.\n"
+        "\n"
+        f"Reference: #{request_id}\n"
+        f"Sent:      {received}\n"
+        "\n"
+        "Your message\n"
+        "------------\n"
+        f"{message}\n"
+        "\n"
+        "---\n"
+        "If this still is not sorted, reply to this email and we will pick it up again.\n"
+    )
+    try:
+        _send_email(email, "Your support request has been resolved", body, reply_to=_support_inbox() or None)
+    except Exception as exc:  # noqa: BLE001 - the request is closed regardless
+        logger.warning("Could not tell %s that request %s was resolved: %s", email, request_id, exc)
+
+
+def _received_label(value) -> str:
+    return (value or datetime.now(timezone.utc)).strftime("%d %b %Y, %H:%M UTC")
+
+
 @router.post(
     "/",
     response_model=SupportRequestResponse,
@@ -244,6 +278,7 @@ def delete_support_requests(
 def set_support_request_status(
     request_id: int,
     payload: UpdateSupportRequestStatus,
+    background: BackgroundTasks,
     db: Session = Depends(deps.get_db),
 ) -> Any:
     request = db.query(SupportRequest).filter(SupportRequest.id == request_id).first()
@@ -251,6 +286,19 @@ def set_support_request_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No support request with id {request_id}.",
+        )
+
+    # Only the move into closed is worth an email; closing something already
+    # closed, or reopening it, is not news to the person who wrote in.
+    newly_closed = payload.status == "closed" and request.status != "closed"
+    if newly_closed:
+        background.add_task(
+            _notify_resolved,
+            request.id,
+            request.name,
+            request.email,
+            request.message,
+            _received_label(request.created_at),
         )
 
     request.status = payload.status
@@ -283,8 +331,27 @@ def set_support_request_status(
 )
 def set_support_requests_status(
     payload: UpdateSupportRequestsStatus,
+    background: BackgroundTasks,
     db: Session = Depends(deps.get_db),
 ) -> Any:
+    if payload.status == "closed":
+        # Read the ones actually changing before the update, so closing a list
+        # that is already half closed does not email the same people twice.
+        becoming_closed = (
+            db.query(SupportRequest)
+            .filter(SupportRequest.id.in_(payload.ids), SupportRequest.status != "closed")
+            .all()
+        )
+        for request in becoming_closed:
+            background.add_task(
+                _notify_resolved,
+                request.id,
+                request.name,
+                request.email,
+                request.message,
+                _received_label(request.created_at),
+            )
+
     updated = (
         db.query(SupportRequest)
         .filter(SupportRequest.id.in_(payload.ids))
