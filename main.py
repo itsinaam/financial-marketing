@@ -20,6 +20,7 @@ from app.models import (
     brand,
     plan,
     support,
+    support_request,
     referral,
 )  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop

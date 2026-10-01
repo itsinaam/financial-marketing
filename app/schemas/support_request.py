@@ -1,0 +1,32 @@
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class SubmitSupportRequest(BaseModel):
+    """The three fields the Support form asks for."""
+
+    name: str = Field(min_length=1, max_length=255, description="Full name")
+    email: EmailStr = Field(description="Where the reply should go")
+    message: str = Field(min_length=1, max_length=5000, description="What they need help with")
+
+
+class SupportRequestResponse(BaseModel):
+    id: int
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    name: str
+    email: str
+    message: str
+    email_sent: bool = False
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupportRequestsResponse(BaseModel):
+    """Everything the Super Admin's table needs, newest first."""
+
+    requests: List[SupportRequestResponse]
+    total: int = 0

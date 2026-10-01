@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     SMTP_USER: str = config("SMTP_USER", default="")
     SMTP_PASSWORD: str = config("SMTP_PASSWORD", default="")
     EMAILS_FROM_NAME: str = config("EMAILS_FROM_NAME", default="Alsabouh")
+    # Where the Support form sends its messages. Falls back to SUPERADMIN_EMAIL.
+    SUPPORT_EMAIL: str = config("SUPPORT_EMAIL", default="")
     INSTAGRAM_REDIRECT_URI: str = config("INSTAGRAM_REDIRECT_URI", default="")
 
     # Meta app credentials used by the one-click Instagram connection flow.
