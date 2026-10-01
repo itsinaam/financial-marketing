@@ -53,6 +53,12 @@ class DeleteSupportRequestsResponse(BaseModel):
     deleted: int = 0
 
 
+class OpenCountResponse(BaseModel):
+    """Just the number the sidebar badge shows."""
+
+    open: int = 0
+
+
 class SupportRequestEventResponse(BaseModel):
     """One line of the timeline on the detail page."""
 

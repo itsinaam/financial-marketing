@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core import deps
@@ -12,6 +13,7 @@ from app.models.companies import Company
 from app.models.support_request import SupportRequest, SupportRequestEvent
 from app.schemas.support_request import (
     DeleteSupportRequests,
+    OpenCountResponse,
     SupportRequestDetailResponse,
     SupportRequestEventResponse,
     UpdateStatusResponse,
@@ -410,6 +412,25 @@ def set_support_requests_status(
         _record(db, request_id, kind, "Changed with others", actor)
 
     return UpdateStatusResponse(updated=updated or 0)
+
+
+@router.get(
+    "/open-count",
+    response_model=OpenCountResponse,
+    dependencies=[Depends(deps.get_current_superadmin)],
+    summary="How many support requests are still open (Super Admin only)",
+)
+def open_support_request_count(
+    db: Session = Depends(deps.get_db),
+) -> Any:
+    """
+    Declared before /{request_id} so the path is not read as an id, and kept to a
+    count because the sidebar asks for it on a timer.
+    """
+    open_count = (
+        db.query(func.count(SupportRequest.id)).filter(SupportRequest.status != "closed").scalar()
+    )
+    return OpenCountResponse(open=open_count or 0)
 
 
 @router.get(
