@@ -23,7 +23,6 @@ class StripeService:
             amount_in_cents = int(amount * 100)
             
             session = stripe.checkout.Session.create(
-                payment_method_types=["card"],
                 customer_email=user_email,
                 line_items=[
                     {

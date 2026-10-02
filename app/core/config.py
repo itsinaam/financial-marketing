@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = config("STRIPE_SECRET_KEY")
     STRIPE_PUBLISHABLE_KEY: str = config("STRIPE_PUBLISHABLE_KEY")
     STRIPE_WEBHOOK_SECRET: str = config("STRIPE_WEBHOOK_SECRET")
+    OPENAI_API_KEY: str = config("OPENAI_API_KEY", default="")
 
     class Config:
         extra = "ignore"

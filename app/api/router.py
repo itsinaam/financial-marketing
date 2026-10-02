@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner, settings, dashboard, notifications, themes, subscriptions, support, support_requests, referrals
+from app.api import auth, companies, payments, credentials, library, posts, blogs, approvals, calendar, planner, settings, dashboard, notifications, themes, subscriptions, support, support_requests, referrals, speech_to_text
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
@@ -20,3 +20,4 @@ api_router.include_router(subscriptions.router, prefix="/subscriptions", tags=["
 api_router.include_router(support.router, prefix="/support", tags=["Support Chat"])
 api_router.include_router(support_requests.router, prefix="/support-requests", tags=["Support Requests"])
 api_router.include_router(referrals.router, prefix="/referrals", tags=["Referrals"])
+api_router.include_router(speech_to_text.router, prefix="/speech", tags=["Speech to Text"])
