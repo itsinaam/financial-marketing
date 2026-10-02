@@ -71,10 +71,24 @@ class SupportRequestEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CompanyRequestSummary(BaseModel):
+    """One of the company's other requests, for the history on the detail page."""
+
+    id: int
+    message: str
+    status: str = "open"
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SupportRequestDetailResponse(SupportRequestResponse):
     """The request plus everything that has happened to it, oldest first."""
 
     events: List[SupportRequestEventResponse] = []
+    # Everything this company has ever sent, newest first, so one request can be
+    # read against the rest rather than on its own.
+    company_requests: List[CompanyRequestSummary] = []
 
 
 class SupportRequestsResponse(BaseModel):
