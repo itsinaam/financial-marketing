@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Realtime Transcription Test</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+        background: #f2f5f3;
+        color: #17231e;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 40px 20px;
+        background: linear-gradient(145deg, #e6f3ed, #f8f6ef 65%, #e9eef4);
+      }
+
+      main {
+        width: min(720px, 100%);
+        margin: 0 auto;
+        padding: 30px;
+        border: 1px solid #d8e1da;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: 0 18px 50px rgba(27, 54, 40, 0.09);
+      }
+
+      h1 { margin: 0 0 8px; font-size: 26px; }
+      p { color: #53645a; line-height: 1.5; }
+      label { display: block; margin: 18px 0 7px; font-weight: 600; }
+
+      input {
+        width: 100%;
+        padding: 11px 12px;
+        border: 1px solid #bdcbc1;
+        border-radius: 5px;
+        font: inherit;
+      }
+
+      .actions { display: flex; gap: 10px; margin-top: 20px; }
+
+      button {
+        min-height: 42px;
+        padding: 0 16px;
+        border: 0;
+        border-radius: 5px;
+        background: #176b4b;
+        color: white;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      button.secondary { background: #354a40; }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      #status { min-height: 24px; margin: 20px 0 12px; font-weight: 600; }
+
+      .transcript {
+        min-height: 100px;
+        margin-top: 8px;
+        padding: 14px;
+        border-left: 3px solid #176b4b;
+        background: #f3f7f4;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      #finalText { min-height: 130px; }
+      @media (max-width: 520px) {
+        body { padding: 18px 12px; }
+        main { padding: 20px 16px; }
+        .actions { flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Gemini realtime speech-to-text</h1>
+      <p>Enter the JWT from your app login, start the microphone, speak, then stop to finalize the transcript. The Gemini token is fetched automatically.</p>
+
+      <label for="apiBase">Backend API base URL</label>
+      <input id="apiBase" value="http://127.0.0.1:8000/api" autocomplete="url">
+
+      <label for="appToken">App login JWT (not the Gemini token)</label>
+      <input id="appToken" type="password" autocomplete="off" placeholder="Paste the Bearer token used by your app">
+
+      <div class="actions">
+        <button id="startButton" type="button">Start microphone</button>
+        <button id="stopButton" class="secondary" type="button" disabled>Stop and finalize</button>
+      </div>
+
+      <div id="status" role="status">Ready</div>
+      <label>Live partial transcript</label>
+      <div id="partialText" class="transcript" aria-live="polite"></div>
+      <label>Final transcript</label>
+      <div id="finalText" class="transcript" aria-live="polite"></div>
+    </main>
+
+    <script>
+      const apiBaseInput = document.querySelector("#apiBase");
+      const appTokenInput = document.querySelector("#appToken");
+      const startButton = document.querySelector("#startButton");
+      const stopButton = document.querySelector("#stopButton");
+      const statusText = document.querySelector("#status");
+      const partialText = document.querySelector("#partialText");
+      const finalText = document.querySelector("#finalText");
+
+      let socket;
+      let microphone;
+      let audioContext;
+      let processor;
+      let source;
+      let partial = "";
+      let finalizeTimer;
+
+      function cleanup() {
+        clearTimeout(finalizeTimer);
+        microphone?.getTracks().forEach((track) => track.stop());
+        processor?.disconnect();
+        source?.disconnect();
+        if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
+        if (audioContext && audioContext.state !== "closed") audioContext.close();
+        socket = undefined;
+        microphone = undefined;
+        audioContext = undefined;
+        processor = undefined;
+        source = undefined;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+      }
+
+      function encodePcm(samples) {
+        const pcm = new ArrayBuffer(samples.length * 2);
+        const view = new DataView(pcm);
+        for (let index = 0; index < samples.length; index += 1) {
+          const sample = Math.max(-1, Math.min(1, samples[index]));
+          view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        }
+        let binary = "";
+        const bytes = new Uint8Array(pcm);
+        for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+        return btoa(binary);
+      }
+
+      async function startAudioStreaming() {
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        if (audioContext.sampleRate !== 16000) {
+          throw new Error(`Browser audio is ${audioContext.sampleRate} Hz; 16000 Hz is required.`);
+        }
+        await audioContext.resume();
+        source = audioContext.createMediaStreamSource(microphone);
+        processor = audioContext.createScriptProcessor(2048, 1, 1);
+        const mute = audioContext.createGain();
+        mute.gain.value = 0;
+        processor.addEventListener("audioprocess", (event) => {
+          if (socket?.readyState !== WebSocket.OPEN) return;
+          const audio = encodePcm(event.inputBuffer.getChannelData(0));
+          socket.send(JSON.stringify({
+            realtimeInput: {
+              audio: { data: audio, mimeType: "audio/pcm;rate=16000" },
+            },
+          }));
+        });
+        source.connect(processor);
+        processor.connect(mute);
+        mute.connect(audioContext.destination);
+      }
+
+      startButton.addEventListener("click", async () => {
+        const appToken = appTokenInput.value.trim();
+        const apiBase = apiBaseInput.value.trim().replace(/\/$/, "");
+        if (!appToken) {
+          statusText.textContent = "Paste your app login JWT, not the Gemini token.";
+          return;
+        }
+
+        startButton.disabled = true;
+        statusText.textContent = "Requesting microphone and Gemini session token...";
+        partial = "";
+        partialText.textContent = "";
+
+        try {
+          microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const tokenResponse = await fetch(`${apiBase}/speech/transcribe`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${appToken}` },
+          });
+          if (!tokenResponse.ok) throw new Error(`Backend ${tokenResponse.status}: ${await tokenResponse.text()}`);
+          const { token, model, setup } = await tokenResponse.json();
+          socket = new WebSocket(
+            `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(token)}`
+          );
+
+          await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              const states = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
+              reject(new Error(`Gemini setup timed out (WebSocket ${states[socket.readyState]}).`));
+            }, 20000);
+            socket.addEventListener("open", () => {
+              statusText.textContent = "Connected to Gemini. Waiting for session setup...";
+              socket.send(JSON.stringify({
+                setup: {
+                  model,
+                  generationConfig: { responseModalities: setup.responseModalities },
+                  inputAudioTranscription: setup.inputAudioTranscription,
+                },
+              }));
+            }, { once: true });
+            socket.addEventListener("message", async ({ data }) => {
+              let message;
+              try {
+                const payload = typeof data === "string"
+                  ? data
+                  : data instanceof Blob
+                    ? await data.text()
+                    : new TextDecoder().decode(data);
+                message = JSON.parse(payload);
+              } catch {
+                clearTimeout(timeout);
+                reject(new Error("Gemini sent an unreadable session message."));
+                return;
+              }
+              if (message.error) {
+                clearTimeout(timeout);
+                reject(new Error(`Gemini setup error: ${message.error.message || "Unknown error"}`));
+                return;
+              }
+              if (message.setupComplete) {
+                clearTimeout(timeout);
+                try {
+                  await startAudioStreaming();
+                  statusText.textContent = "Listening. Speak now, then select Stop and finalize.";
+                  stopButton.disabled = false;
+                  resolve();
+                } catch (error) {
+                  reject(error);
+                }
+              }
+              if (message.serverContent?.interimInputTranscription?.text) {
+                partial = message.serverContent.interimInputTranscription.text;
+                partialText.textContent = partial;
+              }
+              if (message.serverContent?.inputTranscription?.text) {
+                finalText.textContent += `${message.serverContent.inputTranscription.text}\n`;
+                partial = "";
+                partialText.textContent = "";
+                statusText.textContent = "Transcript received.";
+                if (stopButton.disabled) cleanup();
+              }
+            });
+            socket.addEventListener("error", () => {
+              clearTimeout(timeout);
+              reject(new Error("Gemini WebSocket connection failed; check network access to generativelanguage.googleapis.com."));
+            }, { once: true });
+            socket.addEventListener("close", (event) => {
+              clearTimeout(timeout);
+              if (!stopButton.disabled) reject(new Error(`Gemini WebSocket closed (${event.code}).`));
+            }, { once: true });
+          });
+        } catch (error) {
+          statusText.textContent = error instanceof Error ? error.message : String(error);
+          cleanup();
+        }
+      });
+
+      stopButton.addEventListener("click", () => {
+        if (socket?.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify({ realtimeInput: { audioStreamEnd: true } }));
+        processor?.disconnect();
+        source?.disconnect();
+        microphone?.getTracks().forEach((track) => track.stop());
+        stopButton.disabled = true;
+        statusText.textContent = "Waiting for final transcript...";
+        finalizeTimer = setTimeout(() => {
+          statusText.textContent = "Transcript stream ended.";
+          cleanup();
+        }, 5000);
+      });
+    </script>
+  </body>
+</html>
