@@ -41,6 +41,12 @@ async def lifespan(app: FastAPI):
         # 1b. Add columns introduced after these tables were first created
         with engine.begin() as connection:
             connection.execute(text(
+                "ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS reference_files JSON NOT NULL DEFAULT '[]'::json"
+            ))
+            connection.execute(text(
+                "ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS company_website VARCHAR(500)"
+            ))
+            connection.execute(text(
                 "ALTER TABLE credentials ADD COLUMN IF NOT EXISTS refresh_token TEXT"
             ))
             connection.execute(text(

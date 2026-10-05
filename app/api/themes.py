@@ -1,6 +1,9 @@
+from pathlib import Path
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core import deps
@@ -10,6 +13,8 @@ from app.schemas.brand import (
     BrandOptionsResponse,
     BrandProfileResponse,
     SaveBrandProfileRequest,
+    StatusLiteral,
+    VisualStyleLiteral,
 )
 from app.services.storage_service import upload_library_asset
 
@@ -17,6 +22,16 @@ router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
 
 MAX_LOGO_BYTES = 5 * 1024 * 1024
+MAX_REFERENCE_UPLOAD_BYTES = 4 * 1024 * 1024
+REFERENCE_UPLOAD_TYPES = {
+    ".avif": "image/avif",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 
 def _get_or_create(db: Session, company_id: int) -> BrandProfile:
@@ -75,6 +90,121 @@ def save_brand_profile(
                 detail=f"Add the {' and '.join(missing)} before completing setup.",
             )
     profile.status = payload.status
+
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+@router.patch("", response_model=BrandProfileResponse, summary="Partially update the brand profile and upload reference files")
+async def patch_brand_profile(
+    request: Request,
+    company_name: Optional[str] = Form(None, max_length=255),
+    company_description: Optional[str] = Form(None, max_length=5000),
+    company_website: Optional[str] = Form(None, max_length=500),
+    contact_email: Optional[str] = Form(None, max_length=255),
+    contact_mobile: Optional[str] = Form(None, max_length=50),
+    brand_tone: Optional[str] = Form(None, max_length=50),
+    target_audience: Optional[str] = Form(None, max_length=500),
+    visual_style: Optional[VisualStyleLiteral] = Form(None),
+    custom_color: Optional[str] = Form(None),
+    custom_text_style: Optional[str] = Form(None, max_length=255),
+    custom_font: Optional[str] = Form(None, max_length=100),
+    profile_status: Optional[StatusLiteral] = Form(None, alias="status"),
+    files: list[UploadFile] = File(
+        default=[],
+        description="Optional PDFs and images; upload multiple files using the same field name",
+        json_schema_extra={"items": {"type": "string", "format": "binary"}},
+    ),
+    company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> Any:
+    form = await request.form()
+    form_values = {
+        "company_name": company_name,
+        "company_description": company_description,
+        "company_website": company_website,
+        "contact_email": contact_email,
+        "contact_mobile": contact_mobile,
+        "brand_tone": brand_tone,
+        "target_audience": target_audience,
+        "visual_style": visual_style,
+        "custom_color": custom_color,
+        "custom_text_style": custom_text_style,
+        "custom_font": custom_font,
+        "status": profile_status,
+    }
+    try:
+        payload = SaveBrandProfileRequest.model_validate(
+            {name: value for name, value in form_values.items() if name in form}
+        )
+    except ValidationError as error:
+        raise RequestValidationError(error.errors()) from error
+
+    company = resolve_company(db, auth, company_id)
+    profile = _get_or_create(db, company.id)
+    data = payload.model_dump(exclude_unset=True)
+    requested_status = data.pop("status", None)
+    for field, value in data.items():
+        setattr(profile, field, value.strip() if isinstance(value, str) else value)
+
+    if requested_status == "complete":
+        missing = [
+            label
+            for label, value in (("company name", profile.company_name), ("company description", profile.company_description))
+            if not (value or "").strip()
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Add the {' and '.join(missing)} before completing setup.",
+            )
+
+    prepared_uploads = []
+    total_upload_bytes = 0
+    for upload in files or []:
+        filename = Path((upload.filename or "").replace("\\", "/")).name
+        extension = Path(filename).suffix.lower()
+        expected_content_type = REFERENCE_UPLOAD_TYPES.get(extension)
+        content_type = (upload.content_type or expected_content_type or "").lower().split(";", 1)[0]
+        if not expected_content_type or content_type not in {expected_content_type, "application/octet-stream"}:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"Unsupported file '{filename}'. Upload PDF, PNG, JPEG, GIF, WebP, or AVIF files.",
+            )
+
+        remaining_bytes = MAX_REFERENCE_UPLOAD_BYTES - total_upload_bytes
+        content = await upload.read(remaining_bytes + 1)
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"The uploaded file '{filename}' is empty.",
+            )
+        total_upload_bytes += len(content)
+        if total_upload_bytes > MAX_REFERENCE_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Combined reference files must be 4 MiB or smaller.",
+            )
+        prepared_uploads.append((filename, content, expected_content_type))
+
+    uploaded_assets = []
+    for filename, content, content_type in prepared_uploads:
+        try:
+            url = upload_library_asset(
+                file_content=content,
+                filename=filename,
+                content_type=content_type,
+            )
+        except Exception as error:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+        uploaded_assets.append({"filename": filename, "content_type": content_type, "url": url})
+
+    if requested_status is not None:
+        profile.status = requested_status
+    if uploaded_assets:
+        profile.reference_files = [*(profile.reference_files or []), *uploaded_assets]
 
     db.commit()
     db.refresh(profile)

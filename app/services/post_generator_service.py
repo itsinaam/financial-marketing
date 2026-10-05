@@ -1,6 +1,7 @@
 import json
 import logging
 import requests
+from datetime import datetime
 from google.genai import types
 from sqlalchemy.orm import Session
 
@@ -24,10 +25,79 @@ DEFAULT_MATCH_THRESHOLD = 0.20
 
 DEFAULT_IMAGE_SYSTEM_PROMPT = (
     "You are an expert social media graphic designer. Generate a high quality, "
-    "professional social media post image based on the reference image(s) and the "
-    "user's request. Preserve the real subject's appearance and important visual "
-    "details rather than inventing a different product."
+    "professional social media post image based on the user's request and any "
+    "supplied reference images. When references are supplied, preserve the real "
+    "subject's appearance and important visual details."
 )
+
+
+def extract_post_plan_from_pdf(pdf_bytes: bytes) -> list[dict[str, str | None]]:
+    """Extract one planned post per entry from an uploaded PDF planner."""
+    extraction_prompt = """
+Read the attached social media planner PDF and extract each distinct planned post.
+Return only JSON in this shape:
+{"posts": [{"topic": "post idea and useful details", "date": "YYYY-MM-DD or null", "start_time": "HH:MM or null"}]}
+
+Rules:
+- Include one entry for each planned post, including each day in a weekly plan.
+- Preserve the plan's topic, offer, audience, and any useful instructions in topic.
+- Convert dates to YYYY-MM-DD only when the actual date is clear in the document.
+- Convert explicit times to 24-hour HH:MM; use null when date or time is not stated.
+- Do not invent topics, dates, or times. Ignore unrelated document content.
+""".strip()
+    client = get_genai_client()
+    response = client.models.generate_content(
+        model=TEXT_MODEL,
+        contents=[
+            extraction_prompt,
+            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+        ],
+    )
+
+    raw_response = (response.text or "").strip()
+    if raw_response.startswith("```"):
+        raw_response = raw_response.strip("`").removeprefix("json").strip()
+    try:
+        result = json.loads(raw_response)
+    except json.JSONDecodeError as error:
+        raise ValueError("Could not read a post plan from this PDF. Check that it contains a clear plan.") from error
+
+    raw_posts = result.get("posts") if isinstance(result, dict) else None
+    if not isinstance(raw_posts, list):
+        raise ValueError("Could not read a post plan from this PDF. Check that it contains a clear plan.")
+
+    posts = []
+    for item in raw_posts:
+        if not isinstance(item, dict) or not isinstance(item.get("topic"), str) or not item["topic"].strip():
+            continue
+
+        planned_date = item.get("date")
+        if not isinstance(planned_date, str):
+            planned_date = None
+        else:
+            try:
+                planned_date = datetime.strptime(planned_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                planned_date = None
+
+        start_time = item.get("start_time")
+        if not isinstance(start_time, str):
+            start_time = None
+        else:
+            try:
+                start_time = datetime.strptime(start_time, "%H:%M").strftime("%H:%M")
+            except ValueError:
+                start_time = None
+
+        posts.append({
+            "topic": item["topic"].strip(),
+            "date": planned_date,
+            "start_time": start_time,
+        })
+
+    if not posts:
+        raise ValueError("No post entries were found in this PDF planner.")
+    return posts
 
 
 def find_relevant_library_image(
@@ -172,9 +242,6 @@ def generate_post_image(
     Generate a new social post image from reference image bytes + the user prompt
     via Gemini's multimodal image model. Returns None if generation fails.
     """
-    if not reference_images:
-        return None
-
     plat_str = platform.lower().strip()
     if plat_str == "instagram":
         style_guide = "Vibrant, modern lifestyle Instagram-style composition."
@@ -183,6 +250,11 @@ def generate_post_image(
     if style_guide_override:
         style_guide = style_guide_override
 
+    reference_guidance = (
+        "Use the supplied reference image(s) as the primary visual reference. Preserve the real subject's appearance and important details."
+        if reference_images
+        else "Create an original image that visually represents the user's request. Do not invent a specific real brand logo or add text."
+    )
     combined_prompt = f"""
 {DEFAULT_IMAGE_SYSTEM_PROMPT}
 
@@ -191,9 +263,10 @@ USER REQUEST:
 
 STYLE GUIDE: {style_guide}
 
+VISUAL DIRECTION: {reference_guidance}
+
 CRITICAL: Do NOT render any text, titles, captions, or typography on the generated
-image. Produce clean photography only, using the supplied reference image(s) as the
-primary visual reference. Do not replace the real subject with a fictional product.
+image. Produce a clean, polished social media visual suitable for the target platform.
 """
 
     parts = [types.Part.from_text(text=combined_prompt)]

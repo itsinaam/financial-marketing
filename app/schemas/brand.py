@@ -15,8 +15,10 @@ _HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 class BrandProfileResponse(BaseModel):
     company_id: int
     logo_url: Optional[str] = None
+    reference_files: list[dict[str, str]] = Field(default_factory=list)
     company_name: Optional[str] = None
     company_description: Optional[str] = None
+    company_website: Optional[str] = None
     contact_email: Optional[str] = None
     contact_mobile: Optional[str] = None
     brand_tone: Optional[str] = None
@@ -34,6 +36,7 @@ class BrandProfileResponse(BaseModel):
 class SaveBrandProfileRequest(BaseModel):
     company_name: Optional[str] = Field(None, max_length=255)
     company_description: Optional[str] = Field(None, max_length=5000)
+    company_website: Optional[str] = Field(None, max_length=500)
     contact_email: Optional[str] = Field(None, max_length=255)
     contact_mobile: Optional[str] = Field(None, max_length=50)
     brand_tone: Optional[str] = Field(

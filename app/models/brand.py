@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -12,8 +12,10 @@ class BrandProfile(Base):
     company_id = Column(Integer, ForeignKey("companies.id"), nullable=False, unique=True, index=True)
 
     logo_url = Column(String(500), nullable=True)
+    reference_files = Column(JSON, nullable=False, default=list)
     company_name = Column(String(255), nullable=True)
     company_description = Column(Text, nullable=True)
+    company_website = Column(String(500), nullable=True)
 
     contact_email = Column(String(255), nullable=True)
     contact_mobile = Column(String(50), nullable=True)
