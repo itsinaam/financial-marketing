@@ -21,7 +21,7 @@ from app.schemas.planner import (
 )
 from app.services.planner_service import generate_content_plan
 from app.services.post_generator_service import create_generated_post, extract_post_plan_from_pdf
-from app.services.brand_service import get_brand_profile
+from app.services.brand_service import brand_prompt_context, get_brand_profile
 from app.services.notification_service import notify, titles_summary
 
 router = APIRouter()
@@ -245,6 +245,11 @@ async def generate_plan(
         company_description=payload.company_description or (brand.company_description if brand else None),
         brand_tone=payload.brand_tone or (brand.brand_tone if brand else None),
         target_audience=payload.target_audience or (brand.target_audience if brand else None),
+        brand_context=brand_prompt_context(
+            brand,
+            company_description=payload.company_description,
+            target_audience=payload.target_audience,
+        ),
     )
 
     approved = payload.mode == "auto_schedule"

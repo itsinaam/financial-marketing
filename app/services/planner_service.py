@@ -17,18 +17,26 @@ def generate_content_plan(
     company_description: str | None = None,
     brand_tone: str | None = None,
     target_audience: str | None = None,
+    brand_context: str = "",
 ) -> list[dict]:
     """
     Plan a run of posts in a single model call: every slot comes back with its own
     headline, caption and hashtags, so a whole week or month costs one request
     instead of one per post.
 
+    brand_context is the same brand block posts get (brand_prompt_context: company
+    name, description, audience, contact details, brand guidelines); when given it
+    replaces the plain company_description line.
+
     Returns a list of dicts (headline, caption, hashtags, ai_safety_score). The list
     is padded with simple placeholders if the model returns fewer entries than asked.
     """
     tone = brand_tone or "Professional"
     audience = target_audience or "a general business audience"
-    brand_line = f"\nABOUT THE BUSINESS:\n{company_description}\n" if company_description else ""
+    if brand_context:
+        brand_line = f"\n{brand_context}\n"
+    else:
+        brand_line = f"\nABOUT THE BUSINESS:\n{company_description}\n" if company_description else ""
     topic_line = f"\nTHEME FOR THIS PLAN:\n{topic}\n" if topic else ""
     planned_topics_line = (
         "\nUSE THESE PLANNED TOPICS IN THIS ORDER:\n"

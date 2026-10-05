@@ -44,6 +44,9 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS reference_files JSON NOT NULL DEFAULT '[]'::json"
             ))
             connection.execute(text(
+                "ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS brand_colors JSON NOT NULL DEFAULT '[]'::json"
+            ))
+            connection.execute(text(
                 "ALTER TABLE brand_profiles ADD COLUMN IF NOT EXISTS company_website VARCHAR(500)"
             ))
             connection.execute(text(

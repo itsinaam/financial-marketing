@@ -2,7 +2,7 @@ import json
 import logging
 import requests
 from datetime import datetime
-from google.genai import types
+from google.genai import errors, types
 from sqlalchemy.orm import Session
 
 from app.models.credentials import Credentials
@@ -11,7 +11,13 @@ from app.models.post import GeneratedPost
 from app.services.image_embed_service import get_genai_client
 from app.services.text_embed_service import generate_text_embedding, cosine_similarity
 from app.services.storage_service import upload_library_asset
-from app.services.brand_service import brand_prompt_context, brand_style_guide, get_brand_profile
+from app.services.brand_service import (
+    apply_brand_logo,
+    brand_prompt_context,
+    brand_style_guide,
+    get_brand_profile,
+    load_brand_style_images,
+)
 from app.services.linkedin_service import LinkedInService
 from app.services.instagram_service import InstagramService
 from app.services.facebook_service import FacebookService
@@ -150,29 +156,30 @@ def generate_caption_and_hashtags(
     lang_str = language or "English (US)"
     plat_str = platform.lower().strip()
 
+    # Platform notes only set the format; the TONE line and the audience decide the voice.
     if plat_str == "instagram":
         platform_instructions = (
             "TARGET PLATFORM: Instagram\n"
-            "STYLE: Casual, vibrant, lifestyle-oriented with natural emojis.\n"
+            "FORMAT: Visual-first and easy to scan; use emojis only where they suit the tone.\n"
             "Write a 1-2 paragraph Instagram-optimized caption, then 8-12 relevant hashtags."
         )
     elif plat_str == "x":
         platform_instructions = (
             "TARGET PLATFORM: X (Twitter)\n"
-            "STYLE: Punchy and concise, under 260 characters total including hashtags.\n"
+            "FORMAT: Concise, under 260 characters total including hashtags.\n"
             "Write a short, attention-grabbing caption, then 2-4 relevant hashtags."
         )
     elif plat_str == "facebook":
         platform_instructions = (
             "TARGET PLATFORM: Facebook\n"
-            "STYLE: Friendly, conversational, community-oriented.\n"
+            "FORMAT: Easy to read in a feed and written to invite comments.\n"
             "Write a 1-2 paragraph caption, then 3-6 relevant hashtags."
         )
     else:
         platform_instructions = (
             "TARGET PLATFORM: LinkedIn\n"
-            f"STYLE: Professional, corporate, thought-leadership tone matching '{tone_str}'.\n"
-            "Write a 1-2 paragraph B2B-appropriate caption, then 5-8 relevant corporate hashtags."
+            "FORMAT: Short, skimmable paragraphs with a clear takeaway.\n"
+            "Write a 1-2 paragraph caption, then 5-8 relevant hashtags."
         )
 
     brand_block = f"\n{brand_context}\n" if brand_context else ""
@@ -184,6 +191,8 @@ USER REQUEST / TOPIC:
 {brand_block}
 TONE: {tone_str}
 LANGUAGE: {lang_str}
+
+Write in the TONE above for the business's audience; the platform notes below only set the format.
 
 {platform_instructions}
 
@@ -236,24 +245,36 @@ def generate_post_image(
     reference_images: list[dict],
     user_prompt: str,
     platform: str,
-    style_guide_override: str | None = None,
+    brand_style: str | None = None,
+    style_images: list[dict] | None = None,
 ) -> bytes | None:
     """
     Generate a new social post image from reference image bytes + the user prompt
     via Gemini's multimodal image model. Returns None if generation fails.
+
+    brand_style is added on top of the platform's own style. style_images are the
+    company's theme images, passed as style-only references (palette, mood, look),
+    separate from the subject reference_images.
     """
     plat_str = platform.lower().strip()
     if plat_str == "instagram":
         style_guide = "Vibrant, modern lifestyle Instagram-style composition."
     else:
         style_guide = "Clean, high-impact, professional composition suitable for business social media."
-    if style_guide_override:
-        style_guide = style_guide_override
+    brand_style_block = f"\nBRAND STYLE (apply on top of the style guide above): {brand_style}\n" if brand_style else ""
 
-    reference_guidance = (
-        "Use the supplied reference image(s) as the primary visual reference. Preserve the real subject's appearance and important details."
-        if reference_images
-        else "Create an original image that visually represents the user's request. Do not invent a specific real brand logo or add text."
+    if reference_images and style_images:
+        reference_guidance = "Use the image(s) labelled SUBJECT REFERENCE as the primary visual reference. Preserve the real subject's appearance and important details."
+    elif reference_images:
+        reference_guidance = "Use the supplied reference image(s) as the primary visual reference. Preserve the real subject's appearance and important details."
+    else:
+        reference_guidance = "Create an original image that visually represents the user's request. Do not invent a specific real brand logo or add text."
+    style_reference_block = (
+        "\nBRAND STYLE REFERENCES: The image(s) labelled BRAND STYLE REFERENCE come from the company's brand "
+        "theme. Use them ONLY as style references: match their colour palette, mood, lighting and overall visual "
+        "style. Never copy their content, subjects, layout, logos or any text from them.\n"
+        if style_images
+        else ""
     )
     combined_prompt = f"""
 {DEFAULT_IMAGE_SYSTEM_PROMPT}
@@ -262,15 +283,20 @@ USER REQUEST:
 {user_prompt}
 
 STYLE GUIDE: {style_guide}
-
+{brand_style_block}
 VISUAL DIRECTION: {reference_guidance}
-
+{style_reference_block}
 CRITICAL: Do NOT render any text, titles, captions, or typography on the generated
 image. Produce a clean, polished social media visual suitable for the target platform.
 """
 
     parts = [types.Part.from_text(text=combined_prompt)]
     for img in reference_images:
+        if style_images:
+            parts.append(types.Part.from_text(text="SUBJECT REFERENCE:"))
+        parts.append(types.Part.from_bytes(data=img["bytes"], mime_type=img["mime_type"]))
+    for img in style_images or []:
+        parts.append(types.Part.from_text(text="BRAND STYLE REFERENCE (style only, do not copy its content):"))
         parts.append(types.Part.from_bytes(data=img["bytes"], mime_type=img["mime_type"]))
 
     try:
@@ -284,6 +310,12 @@ image. Produce a clean, polished social media visual suitable for the target pla
                 for part in candidate.content.parts:
                     if part.inline_data and part.inline_data.data:
                         return part.inline_data.data
+    except errors.ClientError as err:
+        # A theme image the model rejects must not cost the post its image.
+        if style_images:
+            logger.warning("Gemini rejected the image request with brand style images, retrying without them: %s", err)
+            return generate_post_image(reference_images, user_prompt, platform, brand_style)
+        logger.warning("Failed to generate post image via Gemini: %s", err)
     except Exception as err:
         logger.warning("Failed to generate post image via Gemini: %s", err)
 
@@ -312,7 +344,7 @@ def create_generated_post(
     2. Generate caption/headline/hashtags tailored to the platform.
     3. If a reference image is available, generate a new AI post image from it.
        (No reference image found -> caption-only draft; still valid for most platforms.)
-    4. Upload the generated image (if any) to Supabase storage.
+    4. Stamp the brand logo on the generated image (if any) and upload it to Supabase storage.
     5. Save the draft as a GeneratedPost row scoped to the company.
     """
     brand = get_brand_profile(db, company_id)
@@ -351,8 +383,16 @@ def create_generated_post(
     )
 
     image_url = None
-    generated_bytes = generate_post_image(images_data, prompt, platform, brand_style_guide(brand))
+    generated_bytes = generate_post_image(
+        images_data,
+        prompt,
+        platform,
+        brand_style_guide(brand),
+        load_brand_style_images(brand),
+    )
     if generated_bytes:
+        # The logo is stamped by code so it is always the real one, never an AI imitation.
+        generated_bytes = apply_brand_logo(generated_bytes, brand)
         try:
             image_url = upload_library_asset(
                 file_content=generated_bytes,

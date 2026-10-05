@@ -23,8 +23,12 @@ class BrandProfile(Base):
     brand_tone = Column(String(50), nullable=True, default="Professional")
     target_audience = Column(String(500), nullable=True)
 
+    # "upload" means the reference_files drive the look; "custom" uses the colours below.
     visual_style = Column(String(20), nullable=True, default="minimalist")
-    # Only meaningful when visual_style is "custom".
+    # Up to 8 lowercase "#rrggbb" colours, in the order they were picked.
+    brand_colors = Column(JSON, nullable=False, default=list)
+    # Only meaningful when visual_style is "custom". Kept equal to brand_colors[0]
+    # so older readers that only know one colour still see the primary one.
     custom_color = Column(String(20), nullable=True)
     custom_text_style = Column(String(255), nullable=True)
     custom_font = Column(String(100), nullable=True)

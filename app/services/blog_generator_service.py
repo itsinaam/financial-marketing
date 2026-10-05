@@ -349,7 +349,13 @@ from app.models.credentials import Credentials
 from app.services.image_embed_service import get_genai_client
 from app.services.post_generator_service import find_relevant_library_image, generate_post_image
 from app.services.storage_service import upload_library_asset
-from app.services.brand_service import brand_prompt_context, brand_style_guide, get_brand_profile
+from app.services.brand_service import (
+    apply_brand_logo,
+    brand_prompt_context,
+    brand_style_guide,
+    get_brand_profile,
+    load_brand_style_images,
+)
 from app.services.wordpress_service import WordPressService
 from app.services.ghost_service import GhostService
 
@@ -504,8 +510,15 @@ def create_generated_blog(
     )
 
     image_url = None
-    generated_bytes = generate_post_image(images_data, prompt, platform, brand_style_guide(brand))
+    generated_bytes = generate_post_image(
+        images_data,
+        prompt,
+        platform,
+        brand_style_guide(brand),
+        load_brand_style_images(brand),
+    )
     if generated_bytes:
+        generated_bytes = apply_brand_logo(generated_bytes, brand)
         try:
             image_url = upload_library_asset(
                 file_content=generated_bytes,

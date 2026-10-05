@@ -1,3 +1,7 @@
+import asyncio
+import io
+import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -20,6 +24,7 @@ from app.services.storage_service import upload_library_asset
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
+logger = logging.getLogger("ThemesRoutes")
 
 MAX_LOGO_BYTES = 5 * 1024 * 1024
 MAX_REFERENCE_UPLOAD_BYTES = 4 * 1024 * 1024
@@ -32,6 +37,56 @@ REFERENCE_UPLOAD_TYPES = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+MAX_PDF_TEXT_CHARS = 8000
+MAX_PDF_TEXT_PAGES = 50
+PDF_TEXT_TIMEOUT_SECONDS = 20
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _extract_pdf_text(content: bytes) -> Optional[str]:
+    """
+    A theme PDF's text, whitespace collapsed and capped, for generation to hand the
+    text model as brand guidelines. None when pypdf is missing, "" when nothing is readable.
+    """
+    try:
+        from pypdf import PdfReader
+    except Exception as error:
+        logger.warning("pypdf is unavailable, so theme PDF text was not extracted: %s", error)
+        return None
+
+    chunks: list[str] = []
+    collected = 0
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        if reader.is_encrypted:
+            reader.decrypt("")
+        for index, page in enumerate(reader.pages):
+            # Collapsing whitespace shrinks the text, so read a little past the cap.
+            if index >= MAX_PDF_TEXT_PAGES or collected > MAX_PDF_TEXT_CHARS * 2:
+                break
+            page_text = page.extract_text() or ""
+            chunks.append(page_text)
+            collected += len(page_text)
+    except Exception as error:
+        # Whatever was read before a broken page is still worth keeping.
+        logger.warning("Could not read all the text of a theme PDF: %s", error)
+
+    text = " ".join(_CONTROL_CHARS.sub(" ", " ".join(chunks)).split())
+    # Lone surrogates from odd fonts cannot be stored as UTF-8.
+    return text.encode("utf-8", "ignore").decode("utf-8")[:MAX_PDF_TEXT_CHARS]
+
+
+async def _pdf_text_for_upload(content: bytes) -> Optional[str]:
+    """Runs the extraction off the event loop and gives up on files that take too long."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _extract_pdf_text, content),
+            timeout=PDF_TEXT_TIMEOUT_SECONDS,
+        )
+    except Exception as error:
+        logger.warning("Theme PDF text extraction failed or timed out: %r", error)
+        return ""
 
 
 def _get_or_create(db: Session, company_id: int) -> BrandProfile:
@@ -107,6 +162,10 @@ async def patch_brand_profile(
     brand_tone: Optional[str] = Form(None, max_length=50),
     target_audience: Optional[str] = Form(None, max_length=500),
     visual_style: Optional[VisualStyleLiteral] = Form(None),
+    brand_colors: Optional[str] = Form(
+        None,
+        description="Comma-separated hex colours, primary first (or the field repeated); replaces the saved list",
+    ),
     custom_color: Optional[str] = Form(None),
     custom_text_style: Optional[str] = Form(None, max_length=255),
     custom_font: Optional[str] = Form(None, max_length=100),
@@ -130,6 +189,8 @@ async def patch_brand_profile(
         "brand_tone": brand_tone,
         "target_audience": target_audience,
         "visual_style": visual_style,
+        # Read from the raw form so a field repeated once per colour keeps them all.
+        "brand_colors": ",".join(value for value in form.getlist("brand_colors") if isinstance(value, str)),
         "custom_color": custom_color,
         "custom_text_style": custom_text_style,
         "custom_font": custom_font,
@@ -199,13 +260,40 @@ async def patch_brand_profile(
             )
         except Exception as error:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
-        uploaded_assets.append({"filename": filename, "content_type": content_type, "url": url})
+        asset = {"filename": filename, "content_type": content_type, "url": url}
+        if content_type == "application/pdf":
+            # Read once here so generation can use the guidelines without downloading the PDF again.
+            text = await _pdf_text_for_upload(content)
+            if text is not None:
+                asset["text"] = text
+        uploaded_assets.append(asset)
 
     if requested_status is not None:
         profile.status = requested_status
     if uploaded_assets:
         profile.reference_files = [*(profile.reference_files or []), *uploaded_assets]
 
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+@router.delete("/files", response_model=BrandProfileResponse, summary="Remove one uploaded theme file")
+def delete_reference_file(
+    url: str = Query(..., min_length=1, description="The file's url, exactly as listed in reference_files"),
+    company_id: Optional[int] = Query(None, description="Optional company ID override (Admin / Testing)"),
+    db: Session = Depends(deps.get_db),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+) -> Any:
+    """Takes the file off the brand profile so generation stops using it; the stored object is left alone."""
+    company = resolve_company(db, auth, company_id)
+    profile = db.query(BrandProfile).filter(BrandProfile.company_id == company.id).first()
+    current = list(profile.reference_files or []) if profile is not None else []
+    remaining = [entry for entry in current if not (isinstance(entry, dict) and entry.get("url") == url.strip())]
+    if profile is None or len(remaining) == len(current):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That theme file was not found.")
+
+    profile.reference_files = remaining
     db.commit()
     db.refresh(profile)
     return profile
