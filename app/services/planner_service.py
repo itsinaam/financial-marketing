@@ -13,6 +13,7 @@ def generate_content_plan(
     platforms: list[str],
     language: str = "English (US)",
     topic: str | None = None,
+    planned_topics: list[str] | None = None,
     company_description: str | None = None,
     brand_tone: str | None = None,
     target_audience: str | None = None,
@@ -29,13 +30,22 @@ def generate_content_plan(
     audience = target_audience or "a general business audience"
     brand_line = f"\nABOUT THE BUSINESS:\n{company_description}\n" if company_description else ""
     topic_line = f"\nTHEME FOR THIS PLAN:\n{topic}\n" if topic else ""
+    planned_topics_line = (
+        "\nUSE THESE PLANNED TOPICS IN THIS ORDER:\n"
+        + "\n".join(f"{index + 1}. {planned_topic}" for index, planned_topic in enumerate(planned_topics))
+        + "\n"
+        if planned_topics
+        else ""
+    )
 
     prompt_text = f"""
 You are a social media strategist planning a content calendar for a business.
-{brand_line}{topic_line}
+{brand_line}{topic_line}{planned_topics_line}
 Plan exactly {count} DISTINCT posts that work as a cohesive series: vary the angle of
 each one (educational, insight, story, tip, question, announcement) so the set does not
 repeat itself. They will be published across these platforms: {', '.join(platforms)}.
+
+When planned topics are supplied, use the corresponding topic for each post in order.
 
 TONE: {tone}
 AUDIENCE: {audience}
@@ -77,8 +87,12 @@ Return ONLY a JSON array (no markdown fences) of exactly {count} objects, each w
     except Exception as err:
         logger.warning("Failed to generate content plan via Gemini, falling back to placeholders: %s", err)
 
-    fallback_topic = topic or company_description or "your business"
     while len(plan) < count:
+        fallback_topic = (
+            planned_topics[len(plan)]
+            if planned_topics and len(plan) < len(planned_topics)
+            else None
+        ) or topic or company_description or "your business"
         plan.append(
             {
                 "headline": f"Content idea {len(plan) + 1} for {fallback_topic}"[:200],

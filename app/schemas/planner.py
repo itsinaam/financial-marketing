@@ -19,8 +19,8 @@ class GeneratePlanRequest(BaseModel):
     count: Optional[int] = Field(
         None,
         ge=1,
-        le=31,
-        description="How many posts to plan. Defaults to one per day of the period.",
+        le=10,
+        description="How many posts to plan and generate images for (maximum 10). Defaults to one per day of the period, or to the number of PDF planner entries.",
     )
     post_time: str = Field("09:00", description="Time of day each planned post goes out (HH:MM)")
     mode: ModeLiteral = Field(

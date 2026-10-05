@@ -20,7 +20,6 @@ from app.schemas.posts import (
 )
 from app.services.post_generator_service import (
     create_generated_post,
-    extract_post_plan_from_pdf,
     publish_post_to_platform,
 )
 from app.services.storage_service import upload_library_asset
@@ -105,7 +104,7 @@ def _parse_hashtags(hashtags: Optional[str]) -> List[str]:
     summary="Generate AI post draft(s) for one or more platforms",
 )
 async def generate_posts(
-    prompt: str = Form("", description="Describe the post or add instructions for the uploaded planner", max_length=2000),
+    prompt: str = Form("", description="Describe the post or add generation instructions", max_length=2000),
     platforms: str = Form(..., description="Comma-separated target platforms (linkedin, instagram, facebook, x)"),
     tone: Optional[str] = Form(None, description="Writing tone. Falls back to the brand tone from Themes."),
     language: str = Form("English (US)", description="Output language"),
@@ -116,11 +115,6 @@ async def generate_posts(
         default=[],
         description="Optional reference image(s) to use instead of the library search",
         json_schema_extra={"items": {"type": "string", "format": "binary"}},
-    ),
-    planner_pdf: Optional[UploadFile] = File(
-        None,
-        description="Optional daily or weekly post planner PDF",
-        json_schema_extra={"format": "binary"},
     ),
     company_id: Optional[int] = Form(None, description="Optional company ID override (defaults to current logged in user)"),
     db: Session = Depends(deps.get_db),
@@ -137,69 +131,27 @@ async def generate_posts(
     (each with its own AI-written caption and AI-generated image), capped at
     MAX_TOTAL_GENERATIONS_PER_REQUEST total across all platforms combined.
     """
-    planner_pdf_bytes = None
     total_upload_bytes = 0
-    if planner_pdf and planner_pdf.filename:
-        content_type = (planner_pdf.content_type or "").lower().split(";", 1)[0]
-        if not planner_pdf.filename.lower().endswith(".pdf") or content_type not in {"application/pdf", "application/octet-stream"}:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="The planner upload must be a PDF file.",
-            )
-        planner_pdf_bytes = await planner_pdf.read(MAX_GENERATION_UPLOAD_BYTES + 1)
-        if not planner_pdf_bytes:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The planner PDF is empty.")
-        if len(planner_pdf_bytes) > MAX_GENERATION_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail="Combined planner and image uploads must be 4 MiB or smaller.",
-            )
-        if b"%PDF-" not in planner_pdf_bytes[:1024]:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="The uploaded file is not a valid PDF.")
-        total_upload_bytes = len(planner_pdf_bytes)
-
-    if not (prompt or "").strip() and planner_pdf_bytes is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide a prompt or upload a planner PDF.")
+    if not (prompt or "").strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide a post prompt.")
 
     company = resolve_company(db, auth, company_id)
     target_platforms = _parse_platforms(platforms)
     extra_hashtags = _parse_hashtags(hashtags)
 
-    if planner_pdf_bytes is not None:
-        try:
-            planned_posts = extract_post_plan_from_pdf(planner_pdf_bytes)
-        except ValueError as error:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-        except Exception as error:
-            logger.exception("Gemini failed while extracting the uploaded planner PDF")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="The planner PDF could not be processed. Please try again.",
-            ) from error
-
-        max_plans_per_platform = max(1, MAX_TOTAL_GENERATIONS_PER_REQUEST // len(target_platforms))
-        plan_entries = planned_posts[:max_plans_per_platform]
-        note = None
-        if len(plan_entries) < len(planned_posts):
-            note = (
-                f"The planner contains {len(planned_posts)} post(s) per platform; capped at "
-                f"{len(plan_entries)} per platform ({len(plan_entries) * len(target_platforms)} total) "
-                "to stay within the AI generation rate limit."
-            )
-    else:
-        topic_prompt, requested_count = _extract_post_count(prompt.strip())
-        # Cap combined (platforms x count) so one request stays within the image-generation limit.
-        count_per_platform = max(1, min(requested_count, MAX_TOTAL_GENERATIONS_PER_REQUEST // len(target_platforms)))
-        plan_entries = [
-            {"topic": topic_prompt, "date": date, "start_time": start_time}
-            for _ in range(count_per_platform)
-        ]
-        note = None
-        if count_per_platform < requested_count:
-            note = (
-                f"Requested {requested_count} post(s) per platform, but capped at {count_per_platform} per "
-                f"platform ({count_per_platform * len(target_platforms)} total) to stay within the AI generation rate limit."
-            )
+    topic_prompt, requested_count = _extract_post_count(prompt.strip())
+    # Cap combined (platforms x count) so one request stays within the image-generation limit.
+    count_per_platform = max(1, min(requested_count, MAX_TOTAL_GENERATIONS_PER_REQUEST // len(target_platforms)))
+    plan_entries = [
+        {"topic": topic_prompt, "date": date, "start_time": start_time}
+        for _ in range(count_per_platform)
+    ]
+    note = None
+    if count_per_platform < requested_count:
+        note = (
+            f"Requested {requested_count} post(s) per platform, but capped at {count_per_platform} per "
+            f"platform ({count_per_platform * len(target_platforms)} total) to stay within the AI generation rate limit."
+        )
 
     custom_images_data = []
     if images:
@@ -213,7 +165,7 @@ async def generate_posts(
             if total_upload_bytes > MAX_GENERATION_UPLOAD_BYTES:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail="Combined planner and image uploads must be 4 MiB or smaller.",
+                    detail="Combined image uploads must be 4 MiB or smaller.",
                 )
             content_type = file.content_type or "image/png"
             public_url = upload_library_asset(
@@ -233,8 +185,6 @@ async def generate_posts(
     for platform in target_platforms:
         for plan_entry in plan_entries:
             post_prompt = plan_entry["topic"]
-            if planner_pdf_bytes is not None and (prompt or "").strip():
-                post_prompt = f"{post_prompt}\n\nAdditional instructions: {prompt.strip()}"
             post = create_generated_post(
                 db=db,
                 company_id=company.id,

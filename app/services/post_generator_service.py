@@ -301,6 +301,9 @@ def create_generated_post(
     language: str | None = "English (US)",
     hashtags: list[str] | None = None,
     custom_images_data: list[dict] | None = None,
+    is_approved: bool = False,
+    approved_at: datetime | None = None,
+    generated_content: dict | None = None,
 ) -> GeneratedPost:
     """
     Full post generation workflow for one platform:
@@ -338,7 +341,7 @@ def create_generated_post(
             except requests.RequestException as err:
                 logger.warning("Failed to fetch matched library image bytes: %s", err)
 
-    caption_data = generate_caption_and_hashtags(
+    caption_data = generated_content or generate_caption_and_hashtags(
         prompt=prompt,
         platform=platform,
         tone=tone,
@@ -375,7 +378,8 @@ def create_generated_post(
         tone=tone or "Professional",
         language=language or "English (US)",
         ai_safety_score=caption_data.get("ai_safety_score", 98),
-        is_approved=False,
+        is_approved=is_approved,
+        approved_at=approved_at,
         is_posted=False,
     )
     db.add(post)
