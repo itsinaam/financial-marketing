@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from html import unescape
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,7 @@ def _extract_text_from_html(html_text: str) -> str:
     text = unescape(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
-    return text.strip()
+    return _clean_text(text).strip()
 
 
 def _normalized_crawl_url(raw_url: str, base_url: str) -> str | None:
@@ -233,24 +234,74 @@ def store_scraped_site(db: Session, company: Company, url: str, title: str | Non
 
 
 _UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+# Control bytes that plain text in UTF-8 or a Windows code page doesn't contain (tab, line breaks, form
+# feed, vertical tab and ESC are left out). Compressed data such as .xlsx, .png or .jpg is about 10% these.
+_CONTROL_BYTES = bytes(range(0x01, 0x09)) + bytes(range(0x0E, 0x1B)) + bytes(range(0x1C, 0x20))
+# Detection only looks at the start of a file; 64 KB is plenty and keeps large uploads fast.
+_SAMPLE_BYTES = 65536
+# Two or more Arabic-script letters that aren't glued to Latin ones: a real Urdu/Arabic word.
+_ARABIC_WORD = re.compile(r"(?<![A-Za-z])[؀-ۿ]{2,}(?![A-Za-z])")
+
+
+def _clean_text(text: str) -> str:
+    """Text Postgres can store: no NUL characters, and no lone UTF-16 surrogates (pypdf can produce them)."""
+    return text.replace("\x00", "").encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
+def _control_byte_share(data: bytes) -> float:
+    return (len(data) - len(data.translate(None, _CONTROL_BYTES))) / len(data) if data else 0.0
+
+
+def _looks_like_text(text: str) -> bool:
+    """No control characters, unassigned or private-use code points, or U+FFFD from bytes that didn't decode."""
+    if not text:
+        return False
+    junk = sum(
+        1
+        for ch in text
+        if ch == "�" or (ch not in "\t\n\r\f\v\x00" and unicodedata.category(ch) in ("Cc", "Cn", "Co", "Cs"))
+    )
+    return junk <= len(text) // 100
 
 
 def _utf16_without_bom(payload: bytes) -> str | None:
     """
-    "utf-16-le" or "utf-16-be" when the NUL bytes sit on one byte position, the way UTF-16
-    text has them, otherwise None. Plain "utf-16" can't be tried blindly: it decodes almost
-    any even-length bytes, so a Windows CSV with "Café €50" would come out as CJK characters.
+    "utf-16-le" or "utf-16-be" when the bytes are UTF-16 without a BOM, otherwise None. Plain "utf-16" can't be
+    tried blindly: it decodes almost any even-length bytes, so a Windows CSV with "Café €50" would come out as CJK.
     """
-    even, odd = payload[::2], payload[1::2]
+    data = payload[:_SAMPLE_BYTES].rstrip(b"\x00")  # NUL padding at the end says nothing about the encoding
+    even, odd = data[::2], data[1::2]
     if not even or not odd:
         return None
-    even_ratio = even.count(0) / len(even)
-    odd_ratio = odd.count(0) / len(odd)
-    if odd_ratio >= 0.3 and even_ratio <= 0.05:
+    even_nuls, odd_nuls = even.count(0), odd.count(0)
+    # Latin-script UTF-16: a NUL in nearly every other byte.
+    if odd_nuls >= 0.3 * len(odd) and even_nuls <= 0.05 * len(even):
         return "utf-16-le"
-    if even_ratio >= 0.3 and odd_ratio <= 0.05:
+    if even_nuls >= 0.3 * len(even) and odd_nuls <= 0.05 * len(odd):
         return "utf-16-be"
+    # Urdu, Arabic, Chinese... UTF-16 has NULs only from spaces, digits and line breaks, but read one byte at a
+    # time it is full of control bytes (0x06 in every Arabic-script letter). Text with a stray NUL is not.
+    if not (even_nuls or odd_nuls) or _control_byte_share(data.replace(b"\x00", b"")) <= 0.02:
+        return None
+    order = ("utf-16-le", "utf-16-be") if odd_nuls >= even_nuls else ("utf-16-be", "utf-16-le")
+    sample = data[: len(data) - len(data) % 2]
+    for encoding in order:
+        if _looks_like_text(sample.decode(encoding, errors="replace")):
+            return encoding
     return None
+
+
+def _windows_urdu_or_arabic(payload: bytes) -> str | None:
+    """
+    The text read as cp1256 when that is clearly what it is. Excel's "CSV (Comma delimited)" and Notepad's ANSI
+    save in the Windows code page, which is cp1256 on Urdu and Arabic Windows; read as cp1252 that is gibberish.
+    """
+    text = payload.decode("cp1256", errors="replace")
+    non_ascii = sum(1 for ch in text if ord(ch) > 0x7F)
+    if not non_ascii:
+        return None
+    arabic = sum(len(word) for word in _ARABIC_WORD.findall(text))
+    return text if arabic >= 0.6 * non_ascii else None
 
 
 def _decode_text_file(payload: bytes) -> str:
@@ -260,15 +311,22 @@ def _decode_text_file(payload: bytes) -> str:
     utf16 = _utf16_without_bom(payload)
     if utf16:
         return payload.decode(utf16, errors="replace")
-    # More than a stray NUL without a UTF-16 pattern means a binary file with a text extension.
-    if payload.count(0) > max(1, len(payload) // 100):
+    # Beyond a stray NUL (trailing NUL padding aside) or a few control bytes, it's a binary file with a text extension.
+    head = payload[:_SAMPLE_BYTES].rstrip(b"\x00")
+    allowed = max(1, len(head) // 100)
+    if head.count(0) > allowed or len(head) - len(head.translate(None, _CONTROL_BYTES)) > allowed:
         raise ValueError("This file doesn't look like text. Upload a text, CSV, Markdown or PDF file.")
-    for encoding in ("utf-8-sig", "cp1252"):
-        try:
-            return payload.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return payload.decode("latin-1")
+    try:
+        return payload.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    urdu_or_arabic = _windows_urdu_or_arabic(payload)
+    if urdu_or_arabic is not None:
+        return urdu_or_arabic
+    try:
+        return payload.decode("cp1252")
+    except UnicodeDecodeError:
+        return payload.decode("latin-1")
 
 
 def extract_text_from_uploaded_file(filename: str, payload: bytes) -> str:
@@ -285,7 +343,7 @@ def extract_text_from_uploaded_file(filename: str, payload: bytes) -> str:
         except Exception as exc:
             logger.warning("Could not extract selectable text from uploaded PDF: %s", exc)
         if extracted_text.strip():
-            return extracted_text.replace("\x00", "")
+            return _clean_text(extracted_text)
 
         try:
             from google.genai import types
@@ -301,18 +359,18 @@ def extract_text_from_uploaded_file(filename: str, payload: bytes) -> str:
                     types.Part.from_bytes(data=payload, mime_type="application/pdf"),
                 ],
             )
-            return (response.text or "").replace("\x00", "").strip()
+            return _clean_text(response.text or "").strip()
         except Exception as exc:
             raise ValueError("No readable PDF text could be extracted; scanned PDF OCR failed.") from exc
 
     # Postgres can't store NUL characters, so none may survive into the saved text.
     if suffix in {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml", ".ini"}:
-        return _decode_text_file(payload).replace("\x00", "")
+        return _clean_text(_decode_text_file(payload))
 
     try:
-        return payload.decode("utf-8").replace("\x00", "")
+        return _clean_text(payload.decode("utf-8"))
     except UnicodeDecodeError:
-        return payload.decode("latin-1", errors="ignore").replace("\x00", "")
+        return _clean_text(payload.decode("latin-1", errors="ignore"))
 
 
 def knowledge_base_context(db: Session, company_id: int, max_chars: int = 8000) -> str:
