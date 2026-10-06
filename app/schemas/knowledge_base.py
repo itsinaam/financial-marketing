@@ -16,6 +16,7 @@ class KnowledgeBaseItemResponse(BaseModel):
     download_url: str | None = None
     title: str | None = None
     file_name: str | None = None
+    file_size: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

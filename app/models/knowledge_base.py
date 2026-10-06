@@ -24,6 +24,8 @@ class KnowledgeBaseItem(Base):
     source_url = Column(String(500), nullable=True)
     title = Column(String(255), nullable=True)
     file_name = Column(String(255), nullable=True)
+    # Size of the uploaded file in bytes (null for website pages and older uploads).
+    file_size = Column(Integer, nullable=True)
     content = Column(Text, nullable=False)
     metadata_json = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

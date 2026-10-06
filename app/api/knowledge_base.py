@@ -76,6 +76,7 @@ async def upload_knowledge_base_file(
         source_url=public_url,
         title=(title or Path(file.filename).stem or "Uploaded knowledge"),
         file_name=file.filename,
+        file_size=len(file_bytes),
         content=extracted_text[:40000],
     )
     db.add(item)
