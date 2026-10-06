@@ -9,7 +9,11 @@ from app.core import deps
 from app.models.companies import Company
 from app.models.knowledge_base import KnowledgeBaseItem, KnowledgeBaseSource
 from app.schemas.knowledge_base import KnowledgeBaseItemResponse, WebsiteKnowledgeRequest
-from app.services.knowledge_base_service import extract_text_from_uploaded_file, store_scraped_site
+from app.services.knowledge_base_service import (
+    delete_knowledge_base_asset,
+    extract_text_from_uploaded_file,
+    store_scraped_site,
+)
 from app.services.storage_service import upload_library_asset
 
 router = APIRouter()
@@ -53,7 +57,10 @@ async def upload_knowledge_base_file(
     if not file_bytes:
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
 
-    extracted_text = extract_text_from_uploaded_file(file.filename, file_bytes)
+    try:
+        extracted_text = extract_text_from_uploaded_file(file.filename, file_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="No readable text could be extracted from the uploaded file.")
 
@@ -105,6 +112,14 @@ def delete_knowledge_base_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Knowledge-base item not found.",
         )
+
+    try:
+        delete_knowledge_base_asset(item)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not remove the stored file: {exc}",
+        ) from exc
 
     db.delete(item)
     db.commit()

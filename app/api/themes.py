@@ -20,7 +20,8 @@ from app.schemas.brand import (
     StatusLiteral,
     VisualStyleLiteral,
 )
-from app.services.storage_service import upload_library_asset
+from app.services.storage_service import delete_library_asset, upload_library_asset
+from app.services.knowledge_base_service import store_scraped_site, website_urls_match
 
 router = APIRouter()
 optional_bearer = HTTPBearer(auto_error=False)
@@ -99,6 +100,23 @@ def _get_or_create(db: Session, company_id: int) -> BrandProfile:
     return profile
 
 
+def _sync_company_website(db: Session, company, profile: BrandProfile, previous_website: str | None) -> None:
+    website = (profile.company_website or "").strip() or None
+    website_changed = bool(website and not website_urls_match(previous_website, website))
+    profile.company_website = website
+    company.website = website
+    if website_changed:
+        try:
+            store_scraped_site(
+                db,
+                company,
+                website,
+                title=f"Company website for {profile.company_name or company.name or company.email}",
+            )
+        except Exception as exc:
+            logger.warning("Failed to scrape company website into knowledge base: %s", exc)
+
+
 @router.get("/options", response_model=BrandOptionsResponse, summary="The tone, font and visual style choices")
 def get_options() -> Any:
     """So the dropdowns and style cards can be built from the API rather than hard-coded."""
@@ -112,7 +130,11 @@ def get_brand_profile(
     auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ) -> Any:
     company = resolve_company(db, auth, company_id)
-    return _get_or_create(db, company.id)
+    profile = _get_or_create(db, company.id)
+    response = BrandProfileResponse.model_validate(profile)
+    if not response.company_website:
+        response.company_website = company.website
+    return response
 
 
 @router.put("", response_model=BrandProfileResponse, summary="Save the brand profile (Save Draft / Complete Setup)")
@@ -128,18 +150,10 @@ def save_brand_profile(
     """
     company = resolve_company(db, auth, company_id)
     profile = _get_or_create(db, company.id)
-
-    if payload.company_website:
-        try:
-            from app.services.knowledge_base_service import store_scraped_site
-            store_scraped_site(db, company, payload.company_website, title=f"Company website for {profile.company_name or company.name or company.email}")
-        except Exception as exc:
-            logger.warning("Failed to scrape company website into knowledge base: %s", exc)
-
+    previous_website = profile.company_website or company.website
     data = payload.model_dump(exclude_unset=True, exclude={"status"})
     for field, value in data.items():
         setattr(profile, field, value.strip() if isinstance(value, str) else value)
-
     if payload.status == "complete":
         missing = [
             label
@@ -152,6 +166,8 @@ def save_brand_profile(
                 detail=f"Add the {' and '.join(missing)} before completing setup.",
             )
     profile.status = payload.status
+    if "company_website" in data:
+        _sync_company_website(db, company, profile, previous_website)
 
     db.commit()
     db.refresh(profile)
@@ -212,17 +228,11 @@ async def patch_brand_profile(
 
     company = resolve_company(db, auth, company_id)
     profile = _get_or_create(db, company.id)
+    previous_website = profile.company_website or company.website
     data = payload.model_dump(exclude_unset=True)
     requested_status = data.pop("status", None)
-    if data.get("company_website"):
-        try:
-            from app.services.knowledge_base_service import store_scraped_site
-            store_scraped_site(db, company, data["company_website"], title=f"Company website for {profile.company_name or company.name or company.email}")
-        except Exception as exc:
-            logger.warning("Failed to scrape company website into knowledge base: %s", exc)
     for field, value in data.items():
         setattr(profile, field, value.strip() if isinstance(value, str) else value)
-
     if requested_status == "complete":
         missing = [
             label
@@ -286,6 +296,9 @@ async def patch_brand_profile(
     if uploaded_assets:
         profile.reference_files = [*(profile.reference_files or []), *uploaded_assets]
 
+    if "company_website" in data:
+        _sync_company_website(db, company, profile, previous_website)
+
     db.commit()
     db.refresh(profile)
     return profile
@@ -298,13 +311,18 @@ def delete_reference_file(
     db: Session = Depends(deps.get_db),
     auth: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
 ) -> Any:
-    """Takes the file off the brand profile so generation stops using it; the stored object is left alone."""
+    """Remove a theme file from the profile and delete its stored object."""
     company = resolve_company(db, auth, company_id)
     profile = db.query(BrandProfile).filter(BrandProfile.company_id == company.id).first()
     current = list(profile.reference_files or []) if profile is not None else []
     remaining = [entry for entry in current if not (isinstance(entry, dict) and entry.get("url") == url.strip())]
     if profile is None or len(remaining) == len(current):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That theme file was not found.")
+
+    try:
+        delete_library_asset(url.strip())
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
 
     profile.reference_files = remaining
     db.commit()

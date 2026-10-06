@@ -1,6 +1,7 @@
 import os
 import uuid
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
@@ -70,3 +71,24 @@ def upload_library_asset(
 
     except Exception as e:
         raise Exception(f"Failed to upload library asset: {str(e)}")
+
+
+def delete_library_asset(public_url: str) -> bool:
+    """Delete an object owned by this app's configured public storage bucket."""
+    if not public_url or not SUPABASE_URL:
+        return False
+
+    parsed_url = urlsplit(public_url)
+    configured_host = urlsplit(SUPABASE_URL).netloc.lower()
+    marker = "/storage/v1/object/public/"
+    if parsed_url.netloc.lower() != configured_host or marker not in parsed_url.path:
+        return False
+
+    bucket_and_path = parsed_url.path.split(marker, 1)[1]
+    bucket, separator, object_path = bucket_and_path.partition("/")
+    if not separator or bucket != BUCKET_NAME or not object_path:
+        return False
+
+    client = get_supabase_client()
+    client.storage.from_(bucket).remove([unquote(object_path)])
+    return True

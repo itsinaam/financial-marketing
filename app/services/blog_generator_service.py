@@ -10,6 +10,7 @@ from app.models.credentials import Credentials
 from app.core.encryption import decrypt, encrypt
 from app.services.image_embed_service import get_genai_client
 from app.services.post_generator_service import find_relevant_library_image, generate_post_image
+from app.services.knowledge_base_service import knowledge_base_context
 from app.services.storage_service import upload_library_asset
 from app.services.wordpress_service import WordPressService
 from app.services.blogger_service import BloggerService
@@ -385,12 +386,14 @@ def generate_blog_content(
     reference_url: str | None = None,
     extra_hashtags: list[str] | None = None,
     brand_context: str = "",
+    knowledge_context: str = "",
 ) -> dict:
     """Generate a long-form blog title + HTML body + tags tailored to the topic."""
     tone_str = tone or "Professional"
     lang_str = language or "English (US)"
 
     brand_block = f"\n{brand_context}\n" if brand_context else ""
+    knowledge_block = f"\n{knowledge_context}\n" if knowledge_context else ""
     reference_context = ""
     if reference_url:
         excerpt = _fetch_reference_url_text(reference_url)
@@ -402,7 +405,7 @@ You are an expert long-form content writer producing a blog article for a busine
 
 TOPIC / REQUEST:
 {prompt}
-{brand_block}{reference_context}
+{brand_block}{knowledge_block}{reference_context}
 TONE: {tone_str}
 LANGUAGE: {lang_str}
 
@@ -507,6 +510,7 @@ def create_generated_blog(
         reference_url=reference_url,
         extra_hashtags=hashtags,
         brand_context=brand_prompt_context(brand),
+        knowledge_context=knowledge_base_context(db, company_id),
     )
 
     image_url = None
