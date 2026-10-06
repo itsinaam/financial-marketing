@@ -232,6 +232,45 @@ def store_scraped_site(db: Session, company: Company, url: str, title: str | Non
     return item
 
 
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+
+
+def _utf16_without_bom(payload: bytes) -> str | None:
+    """
+    "utf-16-le" or "utf-16-be" when the NUL bytes sit on one byte position, the way UTF-16
+    text has them, otherwise None. Plain "utf-16" can't be tried blindly: it decodes almost
+    any even-length bytes, so a Windows CSV with "Café €50" would come out as CJK characters.
+    """
+    even, odd = payload[::2], payload[1::2]
+    if not even or not odd:
+        return None
+    even_ratio = even.count(0) / len(even)
+    odd_ratio = odd.count(0) / len(odd)
+    if odd_ratio >= 0.3 and even_ratio <= 0.05:
+        return "utf-16-le"
+    if even_ratio >= 0.3 and odd_ratio <= 0.05:
+        return "utf-16-be"
+    return None
+
+
+def _decode_text_file(payload: bytes) -> str:
+    """Text, CSV, Markdown and similar files: UTF-16 only with clear signs of it, then UTF-8, then the Windows code page."""
+    if payload.startswith(_UTF16_BOMS):
+        return payload.decode("utf-16", errors="replace")
+    utf16 = _utf16_without_bom(payload)
+    if utf16:
+        return payload.decode(utf16, errors="replace")
+    # More than a stray NUL without a UTF-16 pattern means a binary file with a text extension.
+    if payload.count(0) > max(1, len(payload) // 100):
+        raise ValueError("This file doesn't look like text. Upload a text, CSV, Markdown or PDF file.")
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return payload.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return payload.decode("latin-1")
+
+
 def extract_text_from_uploaded_file(filename: str, payload: bytes) -> str:
     suffix = Path(filename or "").suffix.lower()
 
@@ -246,41 +285,34 @@ def extract_text_from_uploaded_file(filename: str, payload: bytes) -> str:
         except Exception as exc:
             logger.warning("Could not extract selectable text from uploaded PDF: %s", exc)
         if extracted_text.strip():
-            return extracted_text
+            return extracted_text.replace("\x00", "")
 
         try:
             from google.genai import types
             from app.services.image_embed_service import get_genai_client
 
-            response = get_genai_client().models.generate_content(
+            # Kept in a variable: a client used inline is closed before the request is sent,
+            # which made every OCR attempt fail with "client has been closed".
+            client = get_genai_client()
+            response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=[
                     "Transcribe all readable text from this scanned PDF. Preserve headings and line breaks. Return only the extracted text.",
                     types.Part.from_bytes(data=payload, mime_type="application/pdf"),
                 ],
             )
-            return (response.text or "").strip()
+            return (response.text or "").replace("\x00", "").strip()
         except Exception as exc:
             raise ValueError("No readable PDF text could be extracted; scanned PDF OCR failed.") from exc
 
+    # Postgres can't store NUL characters, so none may survive into the saved text.
     if suffix in {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".yaml", ".yml", ".ini"}:
-        if b"\x00" in payload:
-            even_nulls = payload[::2].count(0)
-            odd_nulls = payload[1::2].count(0)
-            utf16_encoding = "utf-16-be" if even_nulls > odd_nulls else "utf-16-le"
-            encodings = ("utf-16", utf16_encoding, "utf-8-sig", "cp1252", "latin-1")
-        else:
-            encodings = ("utf-8-sig", "utf-16", "cp1252", "latin-1")
-        for encoding in encodings:
-            try:
-                return payload.decode(encoding).strip("\x00")
-            except UnicodeDecodeError:
-                continue
+        return _decode_text_file(payload).replace("\x00", "")
 
     try:
-        return payload.decode("utf-8")
+        return payload.decode("utf-8").replace("\x00", "")
     except UnicodeDecodeError:
-        return payload.decode("latin-1", errors="ignore")
+        return payload.decode("latin-1", errors="ignore").replace("\x00", "")
 
 
 def knowledge_base_context(db: Session, company_id: int, max_chars: int = 8000) -> str:
