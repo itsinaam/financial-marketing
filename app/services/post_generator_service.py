@@ -22,6 +22,8 @@ from app.services.linkedin_service import LinkedInService
 from app.services.instagram_service import InstagramService
 from app.services.facebook_service import FacebookService
 from app.services.twitter_service import TwitterService
+from app.models.knowledge_base import KnowledgeBaseItem
+from app.services.knowledge_base_service import knowledge_base_context
 
 logger = logging.getLogger("PostGeneratorService")
 
@@ -150,6 +152,7 @@ def generate_caption_and_hashtags(
     language: str | None = "English (US)",
     extra_hashtags: list[str] | None = None,
     brand_context: str = "",
+    knowledge_context: str = "",
 ) -> dict:
     """Generate a headline, caption, hashtags, and safety score tailored to the target platform."""
     tone_str = tone or "Professional"
@@ -183,12 +186,13 @@ def generate_caption_and_hashtags(
         )
 
     brand_block = f"\n{brand_context}\n" if brand_context else ""
+    knowledge_block = f"\n{knowledge_context}\n" if knowledge_context else ""
     prompt_text = f"""
 You are an expert social media content strategist writing on behalf of a business.
 
 USER REQUEST / TOPIC:
 {prompt}
-{brand_block}
+{brand_block}{knowledge_block}
 TONE: {tone_str}
 LANGUAGE: {lang_str}
 
@@ -373,6 +377,7 @@ def create_generated_post(
             except requests.RequestException as err:
                 logger.warning("Failed to fetch matched library image bytes: %s", err)
 
+    knowledge_context = knowledge_base_context(db, company_id)
     caption_data = generated_content or generate_caption_and_hashtags(
         prompt=prompt,
         platform=platform,
@@ -380,6 +385,7 @@ def create_generated_post(
         language=language,
         extra_hashtags=hashtags,
         brand_context=brand_prompt_context(brand),
+        knowledge_context=knowledge_context,
     )
 
     image_url = None

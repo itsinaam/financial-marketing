@@ -14,6 +14,9 @@ class Company(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=False)
+    website = Column(String(500), nullable=True)
+    website_scrape_status = Column(String(50), nullable=False, default="not_started", server_default="not_started")
+    website_scrape_error = Column(String(1000), nullable=True)
     first_name = Column(String(100), nullable=True)
     last_name = Column(String(100), nullable=True)
     avatar_url = Column(String(500), nullable=True)
@@ -29,7 +32,7 @@ class Company(Base):
 
     payments = relationship("Payment", back_populates="company", cascade="all, delete-orphan", lazy="selectin")
     credentials = relationship("Credentials", back_populates="company", cascade="all, delete-orphan", lazy="selectin")
-
+    knowledge_base_items = relationship("KnowledgeBaseItem", back_populates="company", cascade="all, delete-orphan", lazy="selectin")
 
     @property
     def connected_accounts(self) -> list[str]:

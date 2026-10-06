@@ -22,6 +22,7 @@ from app.models import (
     support,
     support_request,
     referral,
+    knowledge_base,
 )  # noqa: F401 - register models on Base
 from app.services.scheduler_service import scheduled_post_checker_loop
 
@@ -75,6 +76,15 @@ async def lifespan(app: FastAPI):
             ))
             connection.execute(text(
                 "ALTER TABLE companies ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS website VARCHAR(500)"
+            ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS website_scrape_status VARCHAR(50) NOT NULL DEFAULT 'not_started'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS website_scrape_error TEXT"
             ))
             connection.execute(text(
                 "ALTER TABLE companies ADD COLUMN IF NOT EXISTS referred_by_company_id INTEGER REFERENCES companies(id)"

@@ -26,6 +26,7 @@ class UserDeleteResponse(BaseModel):
 class UserBase(BaseModel):
     email: EmailStr
     name: str | None = None
+    website: str | None = None
     role: Role = Role.COMPANY
     is_active: bool = True
 
@@ -49,6 +50,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
     confirm_password: str
+    website: str | None = None
     referrer_id: int | None = None
 
     @model_validator(mode="after")

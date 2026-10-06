@@ -129,6 +129,13 @@ def save_brand_profile(
     company = resolve_company(db, auth, company_id)
     profile = _get_or_create(db, company.id)
 
+    if payload.company_website:
+        try:
+            from app.services.knowledge_base_service import store_scraped_site
+            store_scraped_site(db, company, payload.company_website, title=f"Company website for {profile.company_name or company.name or company.email}")
+        except Exception as exc:
+            logger.warning("Failed to scrape company website into knowledge base: %s", exc)
+
     data = payload.model_dump(exclude_unset=True, exclude={"status"})
     for field, value in data.items():
         setattr(profile, field, value.strip() if isinstance(value, str) else value)
@@ -207,6 +214,12 @@ async def patch_brand_profile(
     profile = _get_or_create(db, company.id)
     data = payload.model_dump(exclude_unset=True)
     requested_status = data.pop("status", None)
+    if data.get("company_website"):
+        try:
+            from app.services.knowledge_base_service import store_scraped_site
+            store_scraped_site(db, company, data["company_website"], title=f"Company website for {profile.company_name or company.name or company.email}")
+        except Exception as exc:
+            logger.warning("Failed to scrape company website into knowledge base: %s", exc)
     for field, value in data.items():
         setattr(profile, field, value.strip() if isinstance(value, str) else value)
 

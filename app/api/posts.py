@@ -109,6 +109,7 @@ async def generate_posts(
     tone: Optional[str] = Form(None, description="Writing tone. Falls back to the brand tone from Themes."),
     language: str = Form("English (US)", description="Output language"),
     hashtags: Optional[str] = Form(None, description="Optional comma/space-separated hashtags to include"),
+    reference_website: Optional[str] = Form(None, max_length=500, description="Optional website URL to scrape and save in the knowledge base before generation"),
     date: Optional[str] = Form(None, description="Scheduled date (YYYY-MM-DD)"),
     start_time: Optional[str] = Form(None, description="Scheduled post time"),
     images: List[UploadFile] = File(
@@ -136,6 +137,12 @@ async def generate_posts(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide a post prompt.")
 
     company = resolve_company(db, auth, company_id)
+    if reference_website:
+        try:
+            from app.services.knowledge_base_service import store_scraped_site
+            store_scraped_site(db, company, reference_website, title="Reference website")
+        except Exception as exc:
+            logger.warning("Failed to scrape reference website for post generation: %s", exc)
     target_platforms = _parse_platforms(platforms)
     extra_hashtags = _parse_hashtags(hashtags)
 
